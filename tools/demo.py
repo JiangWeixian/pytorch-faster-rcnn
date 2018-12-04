@@ -79,6 +79,7 @@ def demo(net, image_name):
     # Load the demo image
     im_file = os.path.join(cfg.DATA_DIR, 'demo', image_name)
     im = cv2.imread(im_file)
+    print('input_im_size', im.shape)
 
     # Detect all object classes and regress object bounds
     timer = Timer()
