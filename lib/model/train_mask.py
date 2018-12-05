@@ -28,6 +28,7 @@ import os
 import sys
 import glob
 import time
+import torchvision.utils as vutils
 
 
 def scale_lr(optimizer, scale):
@@ -65,8 +66,12 @@ class SolverWrapper(object):
 
     # Store the model snapshot
     filename = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}'.format(iter) + '.pth'
+    filename_downsample = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_downsample'.format(iter) + '.pth'
+    filename_g = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_g'.format(iter) + '.pth'
     filename = os.path.join(self.output_dir, filename)
     torch.save(self.net.state_dict(), filename)
+    torch.save(self.netG.state_dict(), filename_g)
+    torch.save(self.downsample.state_dict(), filename_downsample)
     print('Wrote snapshot to: {:s}'.format(filename))
 
     # Also store some meta information, random state, etc.
@@ -233,18 +238,18 @@ class SolverWrapper(object):
     fg = fg * image
     # bright
     if npr.randint(2):
-      alpha = npr.uniform(-0.5 * 256, 0.5 * 256)
+      alpha = npr.uniform(-0.5 * 255, 0.5 * 255)
       bg = bg + alpha
       fg = fg + alpha  
 
     # contrast
     if npr.randint(2):
-      alpha = npr.uniform(0.5 * 256, 1.5 * 256)
+      alpha = npr.uniform(0.5, 1.5)
       fg = fg * alpha
 
     # saturation
     if npr.randint(2):
-      alpha = npr.uniform(0.5 * 256, 1.5 * 256)
+      alpha = npr.uniform(0.5, 1.5)
       fg[:, 0, :, :] = fg[:, 0, :, :] * alpha    
   
     # swap
@@ -282,6 +287,7 @@ class SolverWrapper(object):
 
     self.net.train()
     self.net.cuda()
+    self.downsample.cuda()
     self.netG.cuda()
 
     blobs = {}
@@ -301,7 +307,8 @@ class SolverWrapper(object):
         blobs = self.data_layer.forward()
       else:
         w, h = blobs['im_info'][:2]
-        self.object_mask = self.netG._up_sample(self.netG(self.net._act_summaries['conv']), w, h)
+        x = self.downsample(self.net._act_summaries['conv'])
+        self.object_mask = self.netG._up_sample(self.netG(x), w, h)
         blobs['data'] = self._swap_channels(blobs['data'])
 
       now = time.time()
