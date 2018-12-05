@@ -4,9 +4,9 @@ import torch
 
 from torch.autograd import Variable
 
-class NetMask2(nn.Module):
+class NetMask(nn.Module):
   def __init__(self, input_nc = 3, output_nc = 1):
-    super(NetMask2, self).__init__()
+    super(NetMask, self).__init__()
     self.input_nc = input_nc
     self.output_nc = output_nc
 
@@ -39,7 +39,7 @@ class NetMask2(nn.Module):
     return x
 
 if __name__ == '__main__':
-  netG = NetMask2()
+  netG = NetMask()
   input = Variable(torch.randn(1, 512, 38, 50))
   res = netG.forward(input)
   print(res.size())
