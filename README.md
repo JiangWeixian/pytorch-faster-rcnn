@@ -7,4 +7,7 @@
 
 ## TODO
 
-* [ ] - Run this code
+* [x] - Run this code
+  * input =  [375, 500]
+  * output = [38, 50]
+* [ ] - add netG mask part / `in lib/nets/masknet.py`
