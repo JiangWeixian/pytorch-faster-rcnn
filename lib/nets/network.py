@@ -1,367 +1,489 @@
 # --------------------------------------------------------
 # Tensorflow Faster R-CNN
 # Licensed under The MIT License [see LICENSE for details]
-# Written by Xinlei Chen and Zheqi He
+# Written by Xinlei Chen
 # --------------------------------------------------------
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorboardX as tb
-
-from model.config import cfg
-import roi_data_layer.roidb as rdl_roidb
-from roi_data_layer.layer import RoIDataLayer
-import utils.timer
-try:
-  import cPickle as pickle
-except ImportError:
-  import pickle
+import math
+import numpy as np
 
 import torch
-import torch.optim as optim
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.autograd import Variable
 
-import numpy as np
-import os
-import sys
-import glob
-import time
+import utils.timer
 
+from layer_utils.snippets import generate_anchors_pre
+from layer_utils.proposal_layer import proposal_layer
+from layer_utils.proposal_top_layer import proposal_top_layer
+from layer_utils.anchor_target_layer import anchor_target_layer
+from layer_utils.proposal_target_layer import proposal_target_layer
+from utils.visualization import draw_bounding_boxes
 
-def scale_lr(optimizer, scale):
-  """Scale the learning rate of the optimizer"""
-  for param_group in optimizer.param_groups:
-    param_group['lr'] *= scale
+from layer_utils.roi_pooling.roi_pool import RoIPoolFunction
+from layer_utils.roi_align.crop_and_resize import CropAndResizeFunction
 
-class SolverWrapper(object):
-  """
-    A wrapper class for the training process
-  """
+from model.config import cfg
 
-  def __init__(self, network, imdb, roidb, valroidb, output_dir, tbdir, pretrained_model=None):
-    self.net = network.resnet
-    self.imdb = imdb
-    self.roidb = roidb
-    self.valroidb = valroidb
-    self.output_dir = output_dir
-    self.tbdir = tbdir
-    # Simply put '_val' at the end to save the summaries from the validation set
-    self.tbvaldir = tbdir + '_val'
-    if not os.path.exists(self.tbvaldir):
-      os.makedirs(self.tbvaldir)
-    self.pretrained_model = pretrained_model
+import tensorboardX as tb
 
-    # Net GAN
-    self.netG = network.G
-    self.netD = network.D
+from scipy.misc import imresize
 
-  def snapshot(self, iter):
-    net = self.net
+class Network(nn.Module):
+  def __init__(self):
+    nn.Module.__init__(self)
+    self._predictions = {}
+    self._losses = {}
+    self._anchor_targets = {}
+    self._proposal_targets = {}
+    self._layers = {}
+    self._gt_image = None
+    self._act_summaries = {}
+    self._score_summaries = {}
+    self._event_summaries = {}
+    self._image_gt_summaries = {}
+    self._variables_to_fix = {}
 
-    if not os.path.exists(self.output_dir):
-      os.makedirs(self.output_dir)
+  def _add_gt_image(self):
+    # add back mean
+    image = self._image_gt_summaries['image'] + cfg.PIXEL_MEANS
+    image = imresize(image[0], self._im_info[:2] / self._im_info[2])
+    # BGR to RGB (opencv uses BGR)
+    self._gt_image = image[np.newaxis, :,:,::-1].copy(order='C')
 
-    # Store the model snapshot
-    filename = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}'.format(iter) + '.pth'
-    filename = os.path.join(self.output_dir, filename)
-    torch.save(self.net.state_dict(), filename)
-    print('Wrote snapshot to: {:s}'.format(filename))
+  def _add_gt_image_summary(self):
+    # use a customized visualization function to visualize the boxes
+    self._add_gt_image()
+    image = draw_bounding_boxes(\
+                      self._gt_image, self._image_gt_summaries['gt_boxes'], self._image_gt_summaries['im_info'])
 
-    # Also store some meta information, random state, etc.
-    nfilename = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}'.format(iter) + '.pkl'
-    nfilename = os.path.join(self.output_dir, nfilename)
-    # current state of numpy random
-    st0 = np.random.get_state()
-    # current position in the database
-    cur = self.data_layer._cur
-    # current shuffled indexes of the database
-    perm = self.data_layer._perm
-    # current position in the validation database
-    cur_val = self.data_layer_val._cur
-    # current shuffled indexes of the validation database
-    perm_val = self.data_layer_val._perm
+    return tb.summary.image('GROUND_TRUTH', image[0].astype('float32')/255.0)
 
-    # Dump the meta info
-    with open(nfilename, 'wb') as fid:
-      pickle.dump(st0, fid, pickle.HIGHEST_PROTOCOL)
-      pickle.dump(cur, fid, pickle.HIGHEST_PROTOCOL)
-      pickle.dump(perm, fid, pickle.HIGHEST_PROTOCOL)
-      pickle.dump(cur_val, fid, pickle.HIGHEST_PROTOCOL)
-      pickle.dump(perm_val, fid, pickle.HIGHEST_PROTOCOL)
-      pickle.dump(iter, fid, pickle.HIGHEST_PROTOCOL)
+  def _add_act_summary(self, key, tensor):
+    return tb.summary.histogram('ACT/' + key + '/activations', tensor.data.cpu().numpy(), bins='auto'),
+    tb.summary.scalar('ACT/' + key + '/zero_fraction',
+                      (tensor.data == 0).float().sum() / tensor.numel())
 
-    return filename, nfilename
+  def _add_score_summary(self, key, tensor):
+    return tb.summary.histogram('SCORE/' + key + '/scores', tensor.data.cpu().numpy(), bins='auto')
 
-  def from_snapshot(self, sfile, nfile):
-    print('Restoring model snapshots from {:s}'.format(sfile))
-    self.net.load_state_dict(torch.load(str(sfile)))
-    print('Restored.')
-    # Needs to restore the other hyper-parameters/states for training, (TODO xinlei) I have
-    # tried my best to find the random states so that it can be recovered exactly
-    # However the Tensorflow state is currently not available
-    with open(nfile, 'rb') as fid:
-      st0 = pickle.load(fid)
-      cur = pickle.load(fid)
-      perm = pickle.load(fid)
-      cur_val = pickle.load(fid)
-      perm_val = pickle.load(fid)
-      last_snapshot_iter = pickle.load(fid)
+  def _add_train_summary(self, key, var):
+    return tb.summary.histogram('TRAIN/' + key, var.data.cpu().numpy(), bins='auto')
 
-      np.random.set_state(st0)
-      self.data_layer._cur = cur
-      self.data_layer._perm = perm
-      self.data_layer_val._cur = cur_val
-      self.data_layer_val._perm = perm_val
+  def _proposal_top_layer(self, rpn_cls_prob, rpn_bbox_pred):
+    rois, rpn_scores = proposal_top_layer(\
+                                    rpn_cls_prob, rpn_bbox_pred, self._im_info,
+                                     self._feat_stride, self._anchors, self._num_anchors)
+    return rois, rpn_scores
 
-    return last_snapshot_iter
+  def _proposal_layer(self, rpn_cls_prob, rpn_bbox_pred):
+    rois, rpn_scores = proposal_layer(\
+                                    rpn_cls_prob, rpn_bbox_pred, self._im_info, self._mode,
+                                     self._feat_stride, self._anchors, self._num_anchors)
 
-  def construct_graph(self):
-    # Set the random seed
-    torch.manual_seed(cfg.RNG_SEED)
-    # Build the main computation graph
-    self.net.create_architecture(self.imdb.num_classes, tag='default',
-                                            anchor_scales=cfg.ANCHOR_SCALES,
-                                            anchor_ratios=cfg.ANCHOR_RATIOS)
-    # Define the loss
-    # loss = layers['total_loss']
-    # Set learning rate and momentum
-    lr = cfg.TRAIN.LEARNING_RATE
-    params = []
-    for key, value in dict(self.net.named_parameters()).items():
-      if value.requires_grad:
-        if 'bias' in key:
-          params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
-        else:
-          params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
-    # add netG params
-    for key, value in dict(self.netG.named_parameters()).items():
-      if value.requires_grad:
-        if 'bias' in key:
-          params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
-        else:
-          params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
-    # add netD params
-    for key, value in dict(self.netD.named_parameters()).items():
-      if value.requires_grad:
-        if 'bias' in key:
-          params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
-        else:
-          params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
-    self.optimizer = torch.optim.SGD(params, momentum=cfg.TRAIN.MOMENTUM)
-    # Write the train and validation information to tensorboard
-    self.writer = tb.writer.FileWriter(self.tbdir)
-    self.valwriter = tb.writer.FileWriter(self.tbvaldir)
+    return rois, rpn_scores
 
-    return lr, self.optimizer
+  def _roi_pool_layer(self, bottom, rois):
+    return RoIPoolFunction(cfg.POOLING_SIZE, cfg.POOLING_SIZE, 1. / 16.)(bottom, rois)
 
-  def find_previous(self):
-    sfiles = os.path.join(self.output_dir, cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_*.pth')
-    sfiles = glob.glob(sfiles)
-    sfiles.sort(key=os.path.getmtime)
-    # Get the snapshot name in pytorch
-    redfiles = []
-    for stepsize in cfg.TRAIN.STEPSIZE:
-      redfiles.append(os.path.join(self.output_dir, 
-                      cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}.pth'.format(stepsize+1)))
-    sfiles = [ss for ss in sfiles if ss not in redfiles]
+  def _crop_pool_layer(self, bottom, rois, max_pool=True):
+    # implement it using stn
+    # box to affine
+    # input (x1,y1,x2,y2)
+    """
+    [  x2-x1             x1 + x2 - W + 1  ]
+    [  -----      0      ---------------  ]
+    [  W - 1                  W - 1       ]
+    [                                     ]
+    [           y2-y1    y1 + y2 - H + 1  ]
+    [    0      -----    ---------------  ]
+    [           H - 1         H - 1      ]
+    """
+    rois = rois.detach()
 
-    nfiles = os.path.join(self.output_dir, cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_*.pkl')
-    nfiles = glob.glob(nfiles)
-    nfiles.sort(key=os.path.getmtime)
-    redfiles = [redfile.replace('.pth', '.pkl') for redfile in redfiles]
-    nfiles = [nn for nn in nfiles if nn not in redfiles]
+    x1 = rois[:, 1::4] / 16.0
+    y1 = rois[:, 2::4] / 16.0
+    x2 = rois[:, 3::4] / 16.0
+    y2 = rois[:, 4::4] / 16.0
 
-    lsf = len(sfiles)
-    assert len(nfiles) == lsf
+    height = bottom.size(2)
+    width = bottom.size(3)
 
-    return lsf, nfiles, sfiles
+    pre_pool_size = cfg.POOLING_SIZE * 2 if max_pool else cfg.POOLING_SIZE
+    crops = CropAndResizeFunction(pre_pool_size, pre_pool_size)(bottom, 
+      torch.cat([y1/(height-1),x1/(width-1),y2/(height-1),x2/(width-1)], 1), rois[:, 0].int())
+    if max_pool:
+      crops = F.max_pool2d(crops, 2, 2)
+    return crops
 
-  def initialize(self):
-    # Initial file lists are empty
-    np_paths = []
-    ss_paths = []
-    # Fresh train directly from ImageNet weights
-    print('Loading initial model weights from {:s}'.format(self.pretrained_model))
-    self.net.load_pretrained_cnn(torch.load(self.pretrained_model))
-    print('Loaded.')
-    # Need to fix the variables before loading, so that the RGB weights are changed to BGR
-    # For VGG16 it also changes the convolutional weights fc6 and fc7 to
-    # fully connected weights
-    last_snapshot_iter = 0
-    lr = cfg.TRAIN.LEARNING_RATE
-    stepsizes = list(cfg.TRAIN.STEPSIZE)
+  def _anchor_target_layer(self, rpn_cls_score):
+    rpn_labels, rpn_bbox_targets, rpn_bbox_inside_weights, rpn_bbox_outside_weights = \
+      anchor_target_layer(
+      rpn_cls_score.data, self._gt_boxes.data.cpu().numpy(), self._im_info, self._feat_stride, self._anchors.data.cpu().numpy(), self._num_anchors)
 
-    return lr, last_snapshot_iter, stepsizes, np_paths, ss_paths
+    rpn_labels = Variable(torch.from_numpy(rpn_labels).float().cuda()) #.set_shape([1, 1, None, None])
+    rpn_bbox_targets = Variable(torch.from_numpy(rpn_bbox_targets).float().cuda())#.set_shape([1, None, None, self._num_anchors * 4])
+    rpn_bbox_inside_weights = Variable(torch.from_numpy(rpn_bbox_inside_weights).float().cuda())#.set_shape([1, None, None, self._num_anchors * 4])
+    rpn_bbox_outside_weights = Variable(torch.from_numpy(rpn_bbox_outside_weights).float().cuda())#.set_shape([1, None, None, self._num_anchors * 4])
 
-  def restore(self, sfile, nfile):
-    # Get the most recent snapshot and restore
-    np_paths = [nfile]
-    ss_paths = [sfile]
-    # Restore model from snapshots
-    last_snapshot_iter = self.from_snapshot(sfile, nfile)
-    # Set the learning rate
-    lr_scale = 1
-    stepsizes = []
-    for stepsize in cfg.TRAIN.STEPSIZE:
-      if last_snapshot_iter > stepsize:
-        lr_scale *= cfg.TRAIN.GAMMA
-      else:
-        stepsizes.append(stepsize)
-    scale_lr(self.optimizer, lr_scale)
-    lr = cfg.TRAIN.LEARNING_RATE * lr_scale
-    return lr, last_snapshot_iter, stepsizes, np_paths, ss_paths
+    rpn_labels = rpn_labels.long()
+    self._anchor_targets['rpn_labels'] = rpn_labels
+    self._anchor_targets['rpn_bbox_targets'] = rpn_bbox_targets
+    self._anchor_targets['rpn_bbox_inside_weights'] = rpn_bbox_inside_weights
+    self._anchor_targets['rpn_bbox_outside_weights'] = rpn_bbox_outside_weights
 
-  def remove_snapshot(self, np_paths, ss_paths):
-    to_remove = len(np_paths) - cfg.TRAIN.SNAPSHOT_KEPT
-    for c in range(to_remove):
-      nfile = np_paths[0]
-      os.remove(str(nfile))
-      np_paths.remove(nfile)
+    for k in self._anchor_targets.keys():
+      self._score_summaries[k] = self._anchor_targets[k]
 
-    to_remove = len(ss_paths) - cfg.TRAIN.SNAPSHOT_KEPT
-    for c in range(to_remove):
-      sfile = ss_paths[0]
-      # To make the code compatible to earlier versions of Tensorflow,
-      # where the naming tradition for checkpoints are different
-      os.remove(str(sfile))
-      ss_paths.remove(sfile)
+    return rpn_labels
 
-  def train_model(self, max_iters):
-    # Build data layers for both training and validation set
-    self.data_layer = RoIDataLayer(self.roidb, self.imdb.num_classes)
-    self.data_layer_val = RoIDataLayer(self.valroidb, self.imdb.num_classes, random=True)
+  def _proposal_target_layer(self, rois, roi_scores):
+    rois, roi_scores, labels, bbox_targets, bbox_inside_weights, bbox_outside_weights = \
+      proposal_target_layer(
+      rois, roi_scores, self._gt_boxes, self._num_classes)
 
-    # Construct the computation graph
-    lr, train_op = self.construct_graph()
+    self._proposal_targets['rois'] = rois
+    self._proposal_targets['labels'] = labels.long()
+    self._proposal_targets['bbox_targets'] = bbox_targets
+    self._proposal_targets['bbox_inside_weights'] = bbox_inside_weights
+    self._proposal_targets['bbox_outside_weights'] = bbox_outside_weights
 
-    # Find previous snapshots if there is any to restore from
-    lsf, nfiles, sfiles = self.find_previous()
+    for k in self._proposal_targets.keys():
+      self._score_summaries[k] = self._proposal_targets[k]
 
-    # Initialize the variables or restore them from the last snapshot
-    if lsf == 0:
-      lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.initialize()
+    return rois, roi_scores
+
+  def _anchor_component(self, height, width):
+    # just to get the shape right
+    #height = int(math.ceil(self._im_info.data[0, 0] / self._feat_stride[0]))
+    #width = int(math.ceil(self._im_info.data[0, 1] / self._feat_stride[0]))
+    anchors, anchor_length = generate_anchors_pre(\
+                                          height, width,
+                                           self._feat_stride, self._anchor_scales, self._anchor_ratios)
+    self._anchors = Variable(torch.from_numpy(anchors).cuda())
+    self._anchor_length = anchor_length
+
+  def _smooth_l1_loss(self, bbox_pred, bbox_targets, bbox_inside_weights, bbox_outside_weights, sigma=1.0, dim=[1]):
+    sigma_2 = sigma ** 2
+    box_diff = bbox_pred - bbox_targets
+    in_box_diff = bbox_inside_weights * box_diff
+    abs_in_box_diff = torch.abs(in_box_diff)
+    smoothL1_sign = (abs_in_box_diff < 1. / sigma_2).detach().float()
+    in_loss_box = torch.pow(in_box_diff, 2) * (sigma_2 / 2.) * smoothL1_sign \
+                  + (abs_in_box_diff - (0.5 / sigma_2)) * (1. - smoothL1_sign)
+    out_loss_box = bbox_outside_weights * in_loss_box
+    loss_box = out_loss_box
+    for i in sorted(dim, reverse=True):
+      loss_box = loss_box.sum(i)
+    loss_box = loss_box.mean()
+    return loss_box
+
+  def _add_losses(self, sigma_rpn=3.0):
+    # RPN, class loss
+    rpn_cls_score = self._predictions['rpn_cls_score_reshape'].view(-1, 2)
+    rpn_label = self._anchor_targets['rpn_labels'].view(-1)
+    rpn_select = Variable((rpn_label.data != -1).nonzero().view(-1))
+    rpn_cls_score = rpn_cls_score.index_select(0, rpn_select).contiguous().view(-1, 2)
+    rpn_label = rpn_label.index_select(0, rpn_select).contiguous().view(-1)
+    rpn_cross_entropy = F.cross_entropy(rpn_cls_score, rpn_label)
+
+    # RPN, bbox loss
+    rpn_bbox_pred = self._predictions['rpn_bbox_pred']
+    rpn_bbox_targets = self._anchor_targets['rpn_bbox_targets']
+    rpn_bbox_inside_weights = self._anchor_targets['rpn_bbox_inside_weights']
+    rpn_bbox_outside_weights = self._anchor_targets['rpn_bbox_outside_weights']
+    rpn_loss_box = self._smooth_l1_loss(rpn_bbox_pred, rpn_bbox_targets, rpn_bbox_inside_weights,
+                                          rpn_bbox_outside_weights, sigma=sigma_rpn, dim=[1, 2, 3])
+
+    # RCNN, class loss
+    cls_score = self._predictions["cls_score"]
+    label = self._proposal_targets["labels"].view(-1)
+    cross_entropy = F.cross_entropy(cls_score.view(-1, self._num_classes), label)
+
+    # RCNN, bbox loss
+    bbox_pred = self._predictions['bbox_pred']
+    bbox_targets = self._proposal_targets['bbox_targets']
+    bbox_inside_weights = self._proposal_targets['bbox_inside_weights']
+    bbox_outside_weights = self._proposal_targets['bbox_outside_weights']
+    loss_box = self._smooth_l1_loss(bbox_pred, bbox_targets, bbox_inside_weights, bbox_outside_weights)
+
+    self._losses['cross_entropy'] = cross_entropy
+    self._losses['loss_box'] = loss_box
+    self._losses['rpn_cross_entropy'] = rpn_cross_entropy
+    self._losses['rpn_loss_box'] = rpn_loss_box
+
+    loss = cross_entropy + loss_box + rpn_cross_entropy + rpn_loss_box
+    self._losses['total_loss'] = loss
+
+    for k in self._losses.keys():
+      self._event_summaries[k] = self._losses[k]
+
+    return loss
+
+  def _region_proposal(self, net_conv):
+    rpn = F.relu(self.rpn_net(net_conv))
+    self._act_summaries['rpn'] = rpn
+
+    rpn_cls_score = self.rpn_cls_score_net(rpn) # batch * (num_anchors * 2) * h * w
+
+    # change it so that the score has 2 as its channel size
+    rpn_cls_score_reshape = rpn_cls_score.view(1, 2, -1, rpn_cls_score.size()[-1]) # batch * 2 * (num_anchors*h) * w
+    rpn_cls_prob_reshape = F.softmax(rpn_cls_score_reshape, dim=1)
+    
+    # Move channel to the last dimenstion, to fit the input of python functions
+    rpn_cls_prob = rpn_cls_prob_reshape.view_as(rpn_cls_score).permute(0, 2, 3, 1) # batch * h * w * (num_anchors * 2)
+    rpn_cls_score = rpn_cls_score.permute(0, 2, 3, 1) # batch * h * w * (num_anchors * 2)
+    rpn_cls_score_reshape = rpn_cls_score_reshape.permute(0, 2, 3, 1).contiguous()  # batch * (num_anchors*h) * w * 2
+    rpn_cls_pred = torch.max(rpn_cls_score_reshape.view(-1, 2), 1)[1]
+
+    rpn_bbox_pred = self.rpn_bbox_pred_net(rpn)
+    rpn_bbox_pred = rpn_bbox_pred.permute(0, 2, 3, 1).contiguous()  # batch * h * w * (num_anchors*4)
+
+    if self._mode == 'TRAIN':
+      rois, roi_scores = self._proposal_layer(rpn_cls_prob, rpn_bbox_pred) # rois, roi_scores are varible
+      rpn_labels = self._anchor_target_layer(rpn_cls_score)
+      rois, _ = self._proposal_target_layer(rois, roi_scores)
     else:
-      lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.restore(str(sfiles[-1]), 
-                                                                             str(nfiles[-1]))
-    iter = last_snapshot_iter + 1
-    last_summary_time = time.time()
-    # Make sure the lists are not empty
-    stepsizes.append(max_iters)
-    stepsizes.reverse()
-    next_stepsize = stepsizes.pop()
-
-    self.net.train()
-    self.net.cuda()
-
-    while iter < max_iters + 1:
-      # Learning rate
-      if iter == next_stepsize + 1:
-        # Add snapshot here before reducing the learning rate
-        self.snapshot(iter)
-        lr *= cfg.TRAIN.GAMMA
-        scale_lr(self.optimizer, cfg.TRAIN.GAMMA)
-        next_stepsize = stepsizes.pop()
-
-      utils.timer.timer.tic()
-      # Get training data, one batch at a time
-      blobs = self.data_layer.forward()
-
-      now = time.time()
-      if iter == 1 or now - last_summary_time > cfg.TRAIN.SUMMARY_INTERVAL:
-        # Compute the graph with summary
-        rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, total_loss, summary = \
-          self.net.train_step_with_summary(blobs, self.optimizer)
-        for _sum in summary: self.writer.add_summary(_sum, float(iter))
-        # Also check the summary on the validation set
-        blobs_val = self.data_layer_val.forward()
-        summary_val = self.net.get_summary(blobs_val)
-        for _sum in summary_val: self.valwriter.add_summary(_sum, float(iter))
-        last_summary_time = now
+      if cfg.TEST.MODE == 'nms':
+        rois, _ = self._proposal_layer(rpn_cls_prob, rpn_bbox_pred)
+      elif cfg.TEST.MODE == 'top':
+        rois, _ = self._proposal_top_layer(rpn_cls_prob, rpn_bbox_pred)
       else:
-        # Compute the graph without summary
-        rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, total_loss = \
-          self.net.train_step(blobs, self.optimizer)
-      utils.timer.timer.toc()
+        raise NotImplementedError
 
-      # Display training information
-      if iter % (cfg.TRAIN.DISPLAY) == 0:
-        print('iter: %d / %d, total loss: %.6f\n >>> rpn_loss_cls: %.6f\n '
-              '>>> rpn_loss_box: %.6f\n >>> loss_cls: %.6f\n >>> loss_box: %.6f\n >>> lr: %f' % \
-              (iter, max_iters, total_loss, rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, lr))
-        print('speed: {:.3f}s / iter'.format(utils.timer.timer.average_time()))
+    self._predictions["rpn_cls_score"] = rpn_cls_score
+    self._predictions["rpn_cls_score_reshape"] = rpn_cls_score_reshape
+    self._predictions["rpn_cls_prob"] = rpn_cls_prob
+    self._predictions["rpn_cls_pred"] = rpn_cls_pred
+    self._predictions["rpn_bbox_pred"] = rpn_bbox_pred
+    self._predictions["rois"] = rois
 
-        # for k in utils.timer.timer._average_time.keys():
-        #   print(k, utils.timer.timer.average_time(k))
+    return rois
 
-      # Snapshotting
-      if iter % cfg.TRAIN.SNAPSHOT_ITERS == 0:
-        last_snapshot_iter = iter
-        ss_path, np_path = self.snapshot(iter)
-        np_paths.append(np_path)
-        ss_paths.append(ss_path)
+  def _region_classification(self, fc7):
+    cls_score = self.cls_score_net(fc7)
+    cls_pred = torch.max(cls_score, 1)[1]
+    cls_prob = F.softmax(cls_score, dim=1)
+    bbox_pred = self.bbox_pred_net(fc7)
 
-        # Remove the old snapshots if there are too many
-        if len(np_paths) > cfg.TRAIN.SNAPSHOT_KEPT:
-          self.remove_snapshot(np_paths, ss_paths)
+    self._predictions["cls_score"] = cls_score
+    self._predictions["cls_pred"] = cls_pred
+    self._predictions["cls_prob"] = cls_prob
+    self._predictions["bbox_pred"] = bbox_pred
 
-      iter += 1
+    return cls_prob, bbox_pred
 
-    if last_snapshot_iter != iter - 1:
-      self.snapshot(iter - 1)
+  def _image_to_head(self):
+    raise NotImplementedError
 
-    self.writer.close()
-    self.valwriter.close()
+  def _head_to_tail(self, pool5):
+    raise NotImplementedError
 
+  def create_architecture(self, num_classes, tag=None,
+                          anchor_scales=(8, 16, 32), anchor_ratios=(0.5, 1, 2)):
+    self._tag = tag
 
-def get_training_roidb(imdb):
-  """Returns a roidb (Region of Interest database) for use in training."""
-  if cfg.TRAIN.USE_FLIPPED:
-    print('Appending horizontally-flipped training examples...')
-    imdb.append_flipped_images()
-    print('done')
+    self._num_classes = num_classes
+    self._anchor_scales = anchor_scales
+    self._num_scales = len(anchor_scales)
 
-  print('Preparing training data...')
-  rdl_roidb.prepare_roidb(imdb)
-  print('done')
+    self._anchor_ratios = anchor_ratios
+    self._num_ratios = len(anchor_ratios)
 
-  return imdb.roidb
+    self._num_anchors = self._num_scales * self._num_ratios
 
+    assert tag != None
 
-def filter_roidb(roidb):
-  """Remove roidb entries that have no usable RoIs."""
+    # Initialize layers
+    self._init_modules()
 
-  def is_valid(entry):
-    # Valid images have:
-    #   (1) At least one foreground RoI OR
-    #   (2) At least one background RoI
-    overlaps = entry['max_overlaps']
-    # find boxes with sufficient overlap
-    fg_inds = np.where(overlaps >= cfg.TRAIN.FG_THRESH)[0]
-    # Select background RoIs as those within [BG_THRESH_LO, BG_THRESH_HI)
-    bg_inds = np.where((overlaps < cfg.TRAIN.BG_THRESH_HI) &
-                       (overlaps >= cfg.TRAIN.BG_THRESH_LO))[0]
-    # image is only valid if such boxes exist
-    valid = len(fg_inds) > 0 or len(bg_inds) > 0
-    return valid
+  def _init_modules(self):
+    self._init_head_tail()
 
-  num = len(roidb)
-  filtered_roidb = [entry for entry in roidb if is_valid(entry)]
-  num_after = len(filtered_roidb)
-  print('Filtered {} roidb entries: {} -> {}'.format(num - num_after,
-                                                     num, num_after))
-  return filtered_roidb
+    # rpn
+    self.rpn_net = nn.Conv2d(self._net_conv_channels, cfg.RPN_CHANNELS, [3, 3], padding=1)
 
+    self.rpn_cls_score_net = nn.Conv2d(cfg.RPN_CHANNELS, self._num_anchors * 2, [1, 1])
+    
+    self.rpn_bbox_pred_net = nn.Conv2d(cfg.RPN_CHANNELS, self._num_anchors * 4, [1, 1])
 
-def train_net(network, imdb, roidb, valroidb, output_dir, tb_dir,
-              pretrained_model=None,
-              max_iters=40000):
-  """Train a Faster R-CNN network."""
-  roidb = filter_roidb(roidb)
-  valroidb = filter_roidb(valroidb)
+    self.cls_score_net = nn.Linear(self._fc7_channels, self._num_classes)
+    self.bbox_pred_net = nn.Linear(self._fc7_channels, self._num_classes * 4)
 
-  sw = SolverWrapper(network, imdb, roidb, valroidb, output_dir, tb_dir,
-                     pretrained_model=pretrained_model)
+    self.init_weights()
 
-  print('Solving...')
-  sw.train_model(max_iters)
-  print('done solving')
+  def _run_summary_op(self, val=False):
+    """
+    Run the summary operator: feed the placeholders with corresponding newtork outputs(activations)
+    """
+    summaries = []
+    # Add image gt
+    summaries.append(self._add_gt_image_summary())
+    # Add event_summaries
+    for key, var in self._event_summaries.items():
+      summaries.append(tb.summary.scalar(key, var.data[0]))
+    self._event_summaries = {}
+    if not val:
+      # Add score summaries
+      for key, var in self._score_summaries.items():
+        summaries.append(self._add_score_summary(key, var))
+      self._score_summaries = {}
+      # Add act summaries
+      for key, var in self._act_summaries.items():
+        summaries += self._add_act_summary(key, var)
+      self._act_summaries = {}
+      # Add train summaries
+      for k, var in dict(self.named_parameters()).items():
+        if var.requires_grad:
+          summaries.append(self._add_train_summary(k, var))
+
+      self._image_gt_summaries = {}
+    
+    return summaries
+
+  def _predict(self):
+    # This is just _build_network in tf-faster-rcnn
+    torch.backends.cudnn.benchmark = False
+    net_conv = self._image_to_head()
+    print('last_layer_size', net_conv.size())
+
+    # build the anchors for the image
+    self._anchor_component(net_conv.size(2), net_conv.size(3))
+   
+    rois = self._region_proposal(net_conv)
+    if cfg.POOLING_MODE == 'crop':
+      pool5 = self._crop_pool_layer(net_conv, rois)
+    else:
+      pool5 = self._roi_pool_layer(net_conv, rois)
+
+    if self._mode == 'TRAIN':
+      torch.backends.cudnn.benchmark = True # benchmark because now the input size are fixed
+    fc7 = self._head_to_tail(pool5)
+
+    cls_prob, bbox_pred = self._region_classification(fc7)
+    
+    for k in self._predictions.keys():
+      self._score_summaries[k] = self._predictions[k]
+
+    return rois, cls_prob, bbox_pred
+
+  def forward(self, image, im_info, gt_boxes=None, mode='TRAIN'):
+    self._image_gt_summaries['image'] = image
+    self._image_gt_summaries['gt_boxes'] = gt_boxes
+    self._image_gt_summaries['im_info'] = im_info
+
+    self._image = Variable(torch.from_numpy(image.transpose([0,3,1,2])).cuda(), volatile=mode == 'TEST')
+    self._im_info = im_info # No need to change; actually it can be an list
+    self._gt_boxes = Variable(torch.from_numpy(gt_boxes).cuda()) if gt_boxes is not None else None
+
+    self._mode = mode
+
+    rois, cls_prob, bbox_pred = self._predict()
+
+    if mode == 'TEST':
+      stds = bbox_pred.data.new(cfg.TRAIN.BBOX_NORMALIZE_STDS).repeat(self._num_classes).unsqueeze(0).expand_as(bbox_pred)
+      means = bbox_pred.data.new(cfg.TRAIN.BBOX_NORMALIZE_MEANS).repeat(self._num_classes).unsqueeze(0).expand_as(bbox_pred)
+      self._predictions["bbox_pred"] = bbox_pred.mul(Variable(stds)).add(Variable(means))
+    else:
+      self._add_losses() # compute losses
+
+  def init_weights(self):
+    def normal_init(m, mean, stddev, truncated=False):
+      """
+      weight initalizer: truncated normal and random normal.
+      """
+      # x is a parameter
+      if truncated:
+        m.weight.data.normal_().fmod_(2).mul_(stddev).add_(mean) # not a perfect approximation
+      else:
+        m.weight.data.normal_(mean, stddev)
+      m.bias.data.zero_()
+      
+    normal_init(self.rpn_net, 0, 0.01, cfg.TRAIN.TRUNCATED)
+    normal_init(self.rpn_cls_score_net, 0, 0.01, cfg.TRAIN.TRUNCATED)
+    normal_init(self.rpn_bbox_pred_net, 0, 0.01, cfg.TRAIN.TRUNCATED)
+    normal_init(self.cls_score_net, 0, 0.01, cfg.TRAIN.TRUNCATED)
+    normal_init(self.bbox_pred_net, 0, 0.001, cfg.TRAIN.TRUNCATED)
+
+  # Extract the head feature maps, for example for vgg16 it is conv5_3
+  # only useful during testing mode
+  def extract_head(self, image):
+    feat = self._layers["head"](Variable(torch.from_numpy(image.transpose([0,3,1,2])).cuda(), volatile=True))
+    return feat
+
+  # only useful during testing mode
+  def test_image(self, image, im_info):
+    self.eval()
+    self.forward(image, im_info, None, mode='TEST')
+    cls_score, cls_prob, bbox_pred, rois = self._predictions["cls_score"].data.cpu().numpy(), \
+                                                     self._predictions['cls_prob'].data.cpu().numpy(), \
+                                                     self._predictions['bbox_pred'].data.cpu().numpy(), \
+                                                     self._predictions['rois'].data.cpu().numpy()
+    return cls_score, cls_prob, bbox_pred, rois
+
+  def delete_intermediate_states(self):
+    # Delete intermediate result to save memory
+    for d in [self._losses, self._predictions, self._anchor_targets, self._proposal_targets]:
+      for k in list(d):
+        del d[k]
+
+  def get_summary(self, blobs):
+    self.eval()
+    self.forward(blobs['data'], blobs['im_info'], blobs['gt_boxes'])
+    self.train()
+    summary = self._run_summary_op(True)
+
+    return summary
+
+  def train_step(self, blobs, train_op):
+    self.forward(blobs['data'], blobs['im_info'], blobs['gt_boxes'])
+    rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss = self._losses["rpn_cross_entropy"].data[0], \
+                                                                        self._losses['rpn_loss_box'].data[0], \
+                                                                        self._losses['cross_entropy'].data[0], \
+                                                                        self._losses['loss_box'].data[0], \
+                                                                        self._losses['total_loss'].data[0]
+    #utils.timer.timer.tic('backward')
+    train_op.zero_grad()
+    self._losses['total_loss'].backward()
+    #utils.timer.timer.toc('backward')
+    train_op.step()
+
+    self.delete_intermediate_states()
+
+    return rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss
+
+  def train_step_with_summary(self, blobs, train_op):
+    self.forward(blobs['data'], blobs['im_info'], blobs['gt_boxes'])
+    rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss = self._losses["rpn_cross_entropy"].data[0], \
+                                                                        self._losses['rpn_loss_box'].data[0], \
+                                                                        self._losses['cross_entropy'].data[0], \
+                                                                        self._losses['loss_box'].data[0], \
+                                                                        self._losses['total_loss'].data[0]
+    train_op.zero_grad()
+    self._losses['total_loss'].backward()
+    train_op.step()
+    summary = self._run_summary_op()
+
+    self.delete_intermediate_states()
+
+    return rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss, summary
+
+  def train_step_no_return(self, blobs, train_op):
+    self.forward(blobs['data'], blobs['im_info'], blobs['gt_boxes'])
+    train_op.zero_grad()
+    self._losses['total_loss'].backward()
+    train_op.step()
+    self.delete_intermediate_states()
+
+  def load_state_dict(self, state_dict):
+    """
+    Because we remove the definition of fc layer in resnet now, it will fail when loading 
+    the model trained before.
+    To provide back compatibility, we overwrite the load_state_dict
+    """
+    nn.Module.load_state_dict(self, {k: state_dict[k] for k in list(self.state_dict())})
+
