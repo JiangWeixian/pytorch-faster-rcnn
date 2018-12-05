@@ -349,6 +349,7 @@ class Network(nn.Module):
     # This is just _build_network in tf-faster-rcnn
     torch.backends.cudnn.benchmark = False
     net_conv = self._image_to_head()
+    self.net_conv = net_conv
     print('last_layer_size', net_conv.size())
 
     # build the anchors for the image

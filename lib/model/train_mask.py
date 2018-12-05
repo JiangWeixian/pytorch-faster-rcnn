@@ -245,6 +245,9 @@ class SolverWrapper(object):
     self.net.train()
     self.net.cuda()
 
+    # checkpoints
+    self.net.net_conv
+
     while iter < max_iters + 1:
       # Learning rate
       if iter == next_stepsize + 1:
