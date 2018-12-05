@@ -12,6 +12,9 @@ class NetMask(nn.Module):
 
     self.deconvmodel = nn.Sequential(
       # *2
+      nn.Conv2d(1024, 512, 1, 1),
+      nn.BatchNorm2d(512),
+      nn.ReLU(inplace=True),
       nn.ConvTranspose2d(512, 256, 4, 2, 1),
       nn.BatchNorm2d(256),
       nn.ReLU(inplace=True),

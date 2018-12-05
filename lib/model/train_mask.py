@@ -274,6 +274,7 @@ class SolverWrapper(object):
 
     self.net.train()
     self.net.cuda()
+    self.netG.cuda()
 
     blobs = []
 
@@ -288,12 +289,12 @@ class SolverWrapper(object):
 
       utils.timer.timer.tic()
       # Get training data, one batch at a time
-      blobs = self.data_layer.forward()
-      # if iter != 0 or iter % 2 == 1:
-      #   blobs = self.data_layer.forward()
-      # else:
-      #   self.object_mask = self.netG(self.net._act_summaries['conv'])
-      #   blobs['data'] = self._swap_channels(blobs['data'])
+      if iter == 0 or iter % 2 == 1:
+        blobs = self.data_layer.forward()
+      else:
+        print('in mask')
+        self.object_mask = self.netG(self.net._act_summaries['conv'])
+        blobs['data'] = self._swap_channels(blobs['data'])
 
       now = time.time()
       if iter == 1 or now - last_summary_time > cfg.TRAIN.SUMMARY_INTERVAL:
