@@ -133,10 +133,21 @@ class SolverWrapper(object):
           params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
         else:
           params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
+    # add netG params
+    for key, value in dict(self.netG.named_parameters()).items():
+      if value.requires_grad:
+        if 'bias' in key:
+          params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
+        else:
+          params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
+    # add netD params
+    for key, value in dict(self.netD.named_parameters()).items():
+      if value.requires_grad:
+        if 'bias' in key:
+          params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
+        else:
+          params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
     self.optimizer = torch.optim.SGD(params, momentum=cfg.TRAIN.MOMENTUM)
-    
-    # GAN optimizer
-    self.optimizer_g = 
     # Write the train and validation information to tensorboard
     self.writer = tb.writer.FileWriter(self.tbdir)
     self.valwriter = tb.writer.FileWriter(self.tbvaldir)
