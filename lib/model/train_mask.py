@@ -219,10 +219,11 @@ class SolverWrapper(object):
 
   def _swap_channels(self, image):
     channels = [0, 1, 2]
-    fg = self.object_mask.numpy()
+    fg = self.object_mask.data.cpu().numpy().transpose([0, 2, 3, 1])
     fg[fg < 0.01] = 0
     bg = (1 - fg) * image
     fg = fg * image
+    print(bg.shape, fg.shape)
     # bright
     if npr.randint(2):
       alpha = npr.uniform(-0.5 * 256, 0.5 * 256)
@@ -276,7 +277,7 @@ class SolverWrapper(object):
     self.net.cuda()
     self.netG.cuda()
 
-    blobs = []
+    blobs = {}
 
     while iter < max_iters + 1:
       # Learning rate
@@ -292,8 +293,8 @@ class SolverWrapper(object):
       if iter == 0 or iter % 2 == 1:
         blobs = self.data_layer.forward()
       else:
-        print('in mask')
-        self.object_mask = self.netG(self.net._act_summaries['conv'])
+        w, h = blobs['im_info'][:2]
+        self.object_mask = self.netG._up_sample(self.netG(self.net._act_summaries['conv']), w, h)
         blobs['data'] = self._swap_channels(blobs['data'])
 
       now = time.time()

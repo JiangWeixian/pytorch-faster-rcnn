@@ -28,13 +28,12 @@ class NetMask(nn.Module):
       nn.Tanh(),
     )
 
-  def _up_sample(self, fm):
-    return F.upsample(fm, size=(375, 500), mode='bilinear')
+  def _up_sample(self, fm, w, h):
+    return F.upsample(fm, size=(int(w), int(h)), mode='bilinear')
 
   
   def forward(self, input):
     x = self.deconvmodel(input)
-    x = self._up_sample(x)
     return x
 
 

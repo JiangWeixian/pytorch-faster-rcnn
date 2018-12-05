@@ -135,8 +135,9 @@ def _sample_rois(all_rois, all_scores, gt_boxes, fg_rois_per_image, rois_per_ima
     bg_inds = bg_inds[torch.from_numpy(npr.choice(np.arange(0, bg_inds.numel()), size=int(rois_per_image), replace=to_replace)).long().cuda()]
     fg_rois_per_image = 0
   else:
-    import pdb
-    pdb.set_trace()
+    print('something wrong, eat this bug')
+    # import pdb
+    # pdb.set_trace()
 
   # The indices that we're selecting (both fg and bg)
   keep_inds = torch.cat([fg_inds, bg_inds], 0)
