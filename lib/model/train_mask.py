@@ -1,217 +1,359 @@
-import os
-import glob
+# --------------------------------------------------------
+# Tensorflow Faster R-CNN
+# Licensed under The MIT License [see LICENSE for details]
+# Written by Xinlei Chen and Zheqi He
+# --------------------------------------------------------
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 
-import random
-import numpy.random as npr
-import glog as log
+import tensorboardX as tb
+
+from model.config import cfg
+import roi_data_layer.roidb as rdl_roidb
+from roi_data_layer.layer import RoIDataLayer
+import utils.timer
+try:
+  import cPickle as pickle
+except ImportError:
+  import pickle
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.utils as vutils
-from torch.autograd import Variable
+import torch.optim as optim
 
-from .loss.loss import GANLoss, criterion_fmloss, MultiBoxLoss, SimpleMultiBoxLoss, GANConfLoss
-from .util.bbox import box_copy, mask_crop
-from .funcs.prior_box import PriorBox
-from .funcs.detection import Detect
-from .funcs.rpn import RPN
-from .funcs.layer import layer_upsample
-# from roi_pooling.modules.roi_pool import RoIPool
-# from pycrayon import CrayonClient
-
-from .base_model import BaseModel
-from .network import define_netD, define_netG, define_netL
-from options.cfg_priorbox import v6
-from options.cfg_gans import *
-
-class DetectModel(BaseModel):
-    '''
-    Full image gan
-    '''
-    def __init__(self, opt):
-        super(DetectModel, self).__init__(opt)
-        # init attributes
-        self.mode = opt.mode
-        self.batch_size = opt.batch_size
-        self.fine_size = opt.fine_size
-        self.cuda = opt.cuda
-        self.num_classes = opt.num_classes
-        self.cnt = 0
-        self.beta = 9
-
-        # init input
-        self.source = self.Tensor(opt.batch_size, opt.input_dim, opt.fine_size, opt.fine_size)
-        self.resize_source = self.Tensor(opt.batch_size, opt.input_dim, 321, 321)
-        self.anno = []
-        self.mask = []
-        self.target = []
-
-        # init network
-        self.netG = define_netG('res101', 3)
-        self.netM = define_netG('mask2', 3)
-        self.netD = define_netG('res101', 3)
-        
-
-        # init optimizer
-        if opt.mode == 'train':
-            self.G_solver = torch.optim.SGD(list(self.netG.parameters()) + list(self.netM.parameters()+list(self.netD.parameters())), lr = self.opt.lr)
-            # self.D_solver = torch.optim.SGD(self.netD.parameters(), lr = self.opt.lr)
-            # self.Loc_solver = torch.optim.SGD(self.netG.parameters(), lr=opt.lr)
-                                                                                            opt.bkg_label, self.cfg, opt.cuda)                                                                           
-        # init Modules
-        self.detect = Detect(self.num_classes, 0, 200, opt.nms_thresh)
-
-        # support cuda
-        if opt.cuda:
-            # self.netD.cuda()
-            self.netG.cuda()
-            self.netM.cuda()
-            self.criterionL1.cuda()
-            self.source = self.source.cuda()
-            self.resize_source = self.resize_source.cuda()
-        
-        # support variable
-        self.source = Variable(self.source)
-        self.resize_source = Variable(self.resize_source)
-
-        log.info("Training Detect Model")
-    
-    def draft_data(self, source, mask, target, anno, wh):
-        self.batch_size = source.size(0)
-        self.source.data.resize_(source.size()).copy_(source)
+import numpy as np
+import os
+import sys
+import glob
+import time
 
 
-    def backward_D(self):
-        '''In PriorBox type
-        '''
-        # REAL RPN
-        self.feats_g, self.real_conf, self.real_loc = self.netG.forward(self.source)
-        self.fake_target = self.netM.forward(self.feats_g)
+def scale_lr(optimizer, scale):
+  """Scale the learning rate of the optimizer"""
+  for param_group in optimizer.param_groups:
+    param_group['lr'] *= scale
 
-        # Real
-        self.real_loss_l, self.real_loss_c = self.criterionMultiBoxLoss.forward(self.real_loc, self.real_conf, self.priorboxes, self.anno)
+class SolverWrapper(object):
+  """
+    A wrapper class for the training process
+  """
 
-        self.cnt += 1
+  def __init__(self, network, imdb, roidb, valroidb, output_dir, tbdir, pretrained_model=None):
+    self.net = network
+    self.imdb = imdb
+    self.roidb = roidb
+    self.valroidb = valroidb
+    self.output_dir = output_dir
+    self.tbdir = tbdir
+    # Simply put '_val' at the end to save the summaries from the validation set
+    self.tbvaldir = tbdir + '_val'
+    if not os.path.exists(self.tbvaldir):
+      os.makedirs(self.tbvaldir)
+    self.pretrained_model = pretrained_model
 
-    def backward_G(self):
-        # Fake
-        _, self.fake_conf, self.fake_loc = self.netD.forward(self.fake_target)
-        #loss loc
-        self.fake_loss_l, self.fake_loss_c = self.criterionMultiBoxLoss.forward(self.fake_loc, self.fake_conf, self.priorboxes, self.anno)
-        self.loss_l1 = self.criterionL1(self.fake_target, self.source)
+    # GAN
+    self.netG = network.g
 
-        # Loss D
-        self.loss = self.fake_loss_l + self.fake_loss_c + self.real_loss_l + self.real_loss_c + self.loss_l1
-        # self.loss_G = self.loss_G_GAN * 0.1 + (self.fake_loss_l + self.fake_loss_c) * 0.9
+  def snapshot(self, iter):
+    net = self.net
 
-        # Backward G
-        self.loss_G.backward()
+    if not os.path.exists(self.output_dir):
+      os.makedirs(self.output_dir)
 
-    def test(self, source, mask, target, anno, wh):
-        # set input
-        self.draft_data(source, mask, target, anno, wh)
+    # Store the model snapshot
+    filename = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}'.format(iter) + '.pth'
+    filename = os.path.join(self.output_dir, filename)
+    torch.save(self.net.state_dict(), filename)
+    print('Wrote snapshot to: {:s}'.format(filename))
 
-        self.feats_g, self.real_conf, self.real_loc = self.netG.forward(self.source)
-        self.fake_target = self.netM.forward(self.feats_g)
-        self._swap_channels()
+    # Also store some meta information, random state, etc.
+    nfilename = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}'.format(iter) + '.pkl'
+    nfilename = os.path.join(self.output_dir, nfilename)
+    # current state of numpy random
+    st0 = np.random.get_state()
+    # current position in the database
+    cur = self.data_layer._cur
+    # current shuffled indexes of the database
+    perm = self.data_layer._perm
+    # current position in the validation database
+    cur_val = self.data_layer_val._cur
+    # current shuffled indexes of the validation database
+    perm_val = self.data_layer_val._perm
 
-    def train(self, source, mask, target, anno, wh):
-        # set input
-        self.draft_data(source, mask, target, anno, wh)
+    # Dump the meta info
+    with open(nfilename, 'wb') as fid:
+      pickle.dump(st0, fid, pickle.HIGHEST_PROTOCOL)
+      pickle.dump(cur, fid, pickle.HIGHEST_PROTOCOL)
+      pickle.dump(perm, fid, pickle.HIGHEST_PROTOCOL)
+      pickle.dump(cur_val, fid, pickle.HIGHEST_PROTOCOL)
+      pickle.dump(perm_val, fid, pickle.HIGHEST_PROTOCOL)
+      pickle.dump(iter, fid, pickle.HIGHEST_PROTOCOL)
 
-        # Backward D&L
-        self.G_solver.zero_grad()
-        self.backward_D() 
-        self.backward_G()       
-        self.G_solver.step()
+    return filename, nfilename
 
-        if self.cnt % 10 == 0:
-            print(self.loss.data[0])
+  def from_snapshot(self, sfile, nfile):
+    print('Restoring model snapshots from {:s}'.format(sfile))
+    self.net.load_state_dict(torch.load(str(sfile)))
+    print('Restored.')
+    # Needs to restore the other hyper-parameters/states for training, (TODO xinlei) I have
+    # tried my best to find the random states so that it can be recovered exactly
+    # However the Tensorflow state is currently not available
+    with open(nfile, 'rb') as fid:
+      st0 = pickle.load(fid)
+      cur = pickle.load(fid)
+      perm = pickle.load(fid)
+      cur_val = pickle.load(fid)
+      perm_val = pickle.load(fid)
+      last_snapshot_iter = pickle.load(fid)
 
-    def save_location(self):
-        # output = self.detect(self.fake_loc, F.softmax(self.fake_conf.view(-1,  self.num_classes)), self.priorboxes)
-        log.info("The detection result in GD: {}".format(self.fake_boxes/self.fine_size))
-        log.info("The datasets result in Val: {}".format(self.anno))
+      np.random.set_state(st0)
+      self.data_layer._cur = cur
+      self.data_layer._perm = perm
+      self.data_layer_val._cur = cur_val
+      self.data_layer_val._perm = perm_val
 
-    def save_image(self, label, epoch):
-        log.info("Saving TRIMG(source/real_target/fake_target) - [epochs: {}  cnt: {}] in {}".format(epoch, self.cnt, self.save_dir))
-        vutils.save_image(self.source.data, '{}/epoch{}_{}_DETECT_source.png'.format(self.save_dir, epoch, label))
-        # cat = torch.cat([self.fake_target, self.real_target], dim=2)
-        # vutils.save_image(cat.data, '{}/epoch{}_{}_DETECT_G.png'.format(self.save_dir, epoch, label))
-        # vutils.save_image(self.real_target.data, '{}/epoch{}_{}_DETECT_real.png'.format(self.save_dir, epoch, label))
-        vutils.save_image(self.fake_target.data, '{}/epoch{}_{}_DETECT_fake.png'.format(self.save_dir, epoch, label))
-        # vutils.save_image(self.resize_source.data, '{}/epoch{}_{}_DETECT_resize.png'.format(self.save_dir, epoch, label))
-    
-    def save_network(self, label, epoch='laterest'):
-        log.info("Saving netG - [epochs: {}  cnt: {}] in {}".format(epoch, self.cnt, self.save_dir))
-        torch.save(self.netG.state_dict(), '{}/epoch_{}_{}_DETECT_netG_.pth'.format(self.save_dir, epoch, label))
-        log.info("Saving netM - [epochs: {}  cnt: {}] in {}".format(epoch, self.cnt, self.save_dir))
-        torch.save(self.netM.state_dict(), '{}/epoch_{}_{}_DETECT_netM.pth'.format(self.save_dir, epoch, label))
-        log.info("Saving netD - [epochs: {}  cnt: {}] in {}".format(epoch, self.cnt, self.save_dir))
-        torch.save(self.netD.state_dict(), '{}/epoch_{}_{}_DETECT_netD.pth'.format(self.save_dir, epoch, label))
-        
-    
-    def save(self, label, epoch):
-        log.info("*" * 50)
-        log.info("Epoch: {}  Iters: {}".format(epoch, self.cnt))
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir)
-        self.save_image(label, epoch)
-        self.save_network(label, epoch=epoch)
-        # self.save_location()
+    return last_snapshot_iter
 
-    def load_networkG(self, g_network_path):
-        '''load network for netG/D, H mean hotmap
-        '''
-        log.info("Loading network weights for netG")
-        if self.cuda:
-            self.netG.load_state_dict(torch.load(g_network_path))
+  def construct_graph(self):
+    # Set the random seed
+    torch.manual_seed(cfg.RNG_SEED)
+    # Build the main computation graph
+    self.net.create_architecture(self.imdb.num_classes, tag='default',
+                                            anchor_scales=cfg.ANCHOR_SCALES,
+                                            anchor_ratios=cfg.ANCHOR_RATIOS)
+    # Define the loss
+    # loss = layers['total_loss']
+    # Set learning rate and momentum
+    lr = cfg.TRAIN.LEARNING_RATE
+    params = []
+    for key, value in dict(self.net.named_parameters()).items():
+      if value.requires_grad:
+        if 'bias' in key:
+          params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
         else:
-            self.netG.load_state_dict(torch.load(g_network_path, map_location=lambda storage, loc: storage))
-
-    def load_networkD(self, d_network_path):
-        '''load network for netG/D, H mean hotmap
-        '''
-        log.info("Loading network weights for netd")
-        if self.cuda:
-            self.netD.load_state_dict(torch.load(d_network_path))
+          params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
+    # add netG params
+    for key, value in dict(self.netG.named_parameters()).items():
+      if value.requires_grad:
+        if 'bias' in key:
+          params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
         else:
-            self.netD.load_state_dict(torch.load(d_network_path, map_location=lambda storage, loc: storage))
+          params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
+    self.optimizer = torch.optim.SGD(params, momentum=cfg.TRAIN.MOMENTUM)
+    # Write the train and validation information to tensorboard
+    self.writer = tb.writer.FileWriter(self.tbdir)
+    self.valwriter = tb.writer.FileWriter(self.tbvaldir)
 
-    def load_networkM(self, m_network_path):
-        '''load network for netM, H mean hotmap
-        '''
-        log.info("Loading network weights for netm")
-        if self.cuda:
-            self.netM.load_state_dict(torch.load(m_network_path))
-        else:
-            self.netM.load_state_dict(torch.load(m_network_path, map_location=lambda storage, loc: storage))
-    
-    def load_pre_network(self, pretrained_path):
-        '''load network for netG/D, H mean hotmap
-        '''
-        log.info("Loading pretrained network weights for resnet18 in netG")
-        if self.cuda:
-            self.netG.resnet.load_state_dict(torch.load(pretrained_path))
-        else:
-            self.netG.resnet.load_state_dict(torch.load(pretrained_path, map_location=lambda storage, loc: storage))
+    return lr, self.optimizer
 
-    def current_errors(self):
-        # return {'loss_G': self.loss_G.data[0], 'loss_D': self.loss_D.data[0], 'loss_fake_loc': (self.fake_loss_c+self.fake_loss_l).data[0], 'loss_real_loc': (self.fake_loss_c+self.fake_loss_l).data[0]}
-        return {'loss_G': self.loss_G.data[0], 'loss_D': self.loss_D.data[0]}
-        
-    def current_errors2(self):
-        return {'loss_loc': (self.fake_loss_c+self.fake_loss_l).data[0]}    
+  def find_previous(self):
+    sfiles = os.path.join(self.output_dir, cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_*.pth')
+    sfiles = glob.glob(sfiles)
+    sfiles.sort(key=os.path.getmtime)
+    # Get the snapshot name in pytorch
+    redfiles = []
+    for stepsize in cfg.TRAIN.STEPSIZE:
+      redfiles.append(os.path.join(self.output_dir, 
+                      cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}.pth'.format(stepsize+1)))
+    sfiles = [ss for ss in sfiles if ss not in redfiles]
 
-    def visual(self):
-        self.D_loc_exp.add_scalar_value('D_loc_loss', self.loss_D.data[0], step=self.cnt)
-        self.G_loc_exp.add_scalar_value('G_loc_loss', self.loss_G.data[0], step=self.cnt)
-        self.loc_exp.add_scalar_value('loc_loss', self.fake_loss_l.data[0]+self.fake_loss_c.data[0], step=self.cnt)
-    
-    def name(self):
-        return 'DetectionModel'
+    nfiles = os.path.join(self.output_dir, cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_*.pkl')
+    nfiles = glob.glob(nfiles)
+    nfiles.sort(key=os.path.getmtime)
+    redfiles = [redfile.replace('.pth', '.pkl') for redfile in redfiles]
+    nfiles = [nn for nn in nfiles if nn not in redfiles]
 
-    def __str__(self):
-        netG_grah =  self.netG.__str__()
-        netD_grah = self.netM.__str__()
-        return 'netG:\n {}\n netD:\n {}\n'.format(netG_grah, netD_grah)
+    lsf = len(sfiles)
+    assert len(nfiles) == lsf
+
+    return lsf, nfiles, sfiles
+
+  def initialize(self):
+    # Initial file lists are empty
+    np_paths = []
+    ss_paths = []
+    # Fresh train directly from ImageNet weights
+    print('Loading initial model weights from {:s}'.format(self.pretrained_model))
+    self.net.load_pretrained_cnn(torch.load(self.pretrained_model))
+    print('Loaded.')
+    # Need to fix the variables before loading, so that the RGB weights are changed to BGR
+    # For VGG16 it also changes the convolutional weights fc6 and fc7 to
+    # fully connected weights
+    last_snapshot_iter = 0
+    lr = cfg.TRAIN.LEARNING_RATE
+    stepsizes = list(cfg.TRAIN.STEPSIZE)
+
+    return lr, last_snapshot_iter, stepsizes, np_paths, ss_paths
+
+  def restore(self, sfile, nfile):
+    # Get the most recent snapshot and restore
+    np_paths = [nfile]
+    ss_paths = [sfile]
+    # Restore model from snapshots
+    last_snapshot_iter = self.from_snapshot(sfile, nfile)
+    # Set the learning rate
+    lr_scale = 1
+    stepsizes = []
+    for stepsize in cfg.TRAIN.STEPSIZE:
+      if last_snapshot_iter > stepsize:
+        lr_scale *= cfg.TRAIN.GAMMA
+      else:
+        stepsizes.append(stepsize)
+    scale_lr(self.optimizer, lr_scale)
+    lr = cfg.TRAIN.LEARNING_RATE * lr_scale
+    return lr, last_snapshot_iter, stepsizes, np_paths, ss_paths
+
+  def remove_snapshot(self, np_paths, ss_paths):
+    to_remove = len(np_paths) - cfg.TRAIN.SNAPSHOT_KEPT
+    for c in range(to_remove):
+      nfile = np_paths[0]
+      os.remove(str(nfile))
+      np_paths.remove(nfile)
+
+    to_remove = len(ss_paths) - cfg.TRAIN.SNAPSHOT_KEPT
+    for c in range(to_remove):
+      sfile = ss_paths[0]
+      # To make the code compatible to earlier versions of Tensorflow,
+      # where the naming tradition for checkpoints are different
+      os.remove(str(sfile))
+      ss_paths.remove(sfile)
+
+  def train_model(self, max_iters):
+    # Build data layers for both training and validation set
+    self.data_layer = RoIDataLayer(self.roidb, self.imdb.num_classes)
+    self.data_layer_val = RoIDataLayer(self.valroidb, self.imdb.num_classes, random=True)
+
+    # Construct the computation graph
+    lr, train_op = self.construct_graph()
+
+    # Find previous snapshots if there is any to restore from
+    lsf, nfiles, sfiles = self.find_previous()
+
+    # Initialize the variables or restore them from the last snapshot
+    if lsf == 0:
+      lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.initialize()
+    else:
+      lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.restore(str(sfiles[-1]), 
+                                                                             str(nfiles[-1]))
+    iter = last_snapshot_iter + 1
+    last_summary_time = time.time()
+    # Make sure the lists are not empty
+    stepsizes.append(max_iters)
+    stepsizes.reverse()
+    next_stepsize = stepsizes.pop()
+
+    self.net.train()
+    self.net.cuda()
+
+    while iter < max_iters + 1:
+      # Learning rate
+      if iter == next_stepsize + 1:
+        # Add snapshot here before reducing the learning rate
+        self.snapshot(iter)
+        lr *= cfg.TRAIN.GAMMA
+        scale_lr(self.optimizer, cfg.TRAIN.GAMMA)
+        next_stepsize = stepsizes.pop()
+
+      utils.timer.timer.tic()
+      # Get training data, one batch at a time
+      blobs = self.data_layer.forward()
+
+      now = time.time()
+      if iter == 1 or now - last_summary_time > cfg.TRAIN.SUMMARY_INTERVAL:
+        # Compute the graph with summary
+        rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, total_loss, summary = \
+          self.net.train_step_with_summary(blobs, self.optimizer)
+        for _sum in summary: self.writer.add_summary(_sum, float(iter))
+        # Also check the summary on the validation set
+        blobs_val = self.data_layer_val.forward()
+        summary_val = self.net.get_summary(blobs_val)
+        for _sum in summary_val: self.valwriter.add_summary(_sum, float(iter))
+        last_summary_time = now
+      else:
+        # Compute the graph without summary
+        rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, total_loss = \
+          self.net.train_step(blobs, self.optimizer)
+      utils.timer.timer.toc()
+
+      # Display training information
+      if iter % (cfg.TRAIN.DISPLAY) == 0:
+        print('iter: %d / %d, total loss: %.6f\n >>> rpn_loss_cls: %.6f\n '
+              '>>> rpn_loss_box: %.6f\n >>> loss_cls: %.6f\n >>> loss_box: %.6f\n >>> lr: %f' % \
+              (iter, max_iters, total_loss, rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, lr))
+        print('speed: {:.3f}s / iter'.format(utils.timer.timer.average_time()))
+
+        # for k in utils.timer.timer._average_time.keys():
+        #   print(k, utils.timer.timer.average_time(k))
+
+      # Snapshotting
+      if iter % cfg.TRAIN.SNAPSHOT_ITERS == 0:
+        last_snapshot_iter = iter
+        ss_path, np_path = self.snapshot(iter)
+        np_paths.append(np_path)
+        ss_paths.append(ss_path)
+
+        # Remove the old snapshots if there are too many
+        if len(np_paths) > cfg.TRAIN.SNAPSHOT_KEPT:
+          self.remove_snapshot(np_paths, ss_paths)
+
+      iter += 1
+
+    if last_snapshot_iter != iter - 1:
+      self.snapshot(iter - 1)
+
+    self.writer.close()
+    self.valwriter.close()
+
+
+def get_training_roidb(imdb):
+  """Returns a roidb (Region of Interest database) for use in training."""
+  if cfg.TRAIN.USE_FLIPPED:
+    print('Appending horizontally-flipped training examples...')
+    imdb.append_flipped_images()
+    print('done')
+
+  print('Preparing training data...')
+  rdl_roidb.prepare_roidb(imdb)
+  print('done')
+
+  return imdb.roidb
+
+
+def filter_roidb(roidb):
+  """Remove roidb entries that have no usable RoIs."""
+
+  def is_valid(entry):
+    # Valid images have:
+    #   (1) At least one foreground RoI OR
+    #   (2) At least one background RoI
+    overlaps = entry['max_overlaps']
+    # find boxes with sufficient overlap
+    fg_inds = np.where(overlaps >= cfg.TRAIN.FG_THRESH)[0]
+    # Select background RoIs as those within [BG_THRESH_LO, BG_THRESH_HI)
+    bg_inds = np.where((overlaps < cfg.TRAIN.BG_THRESH_HI) &
+                       (overlaps >= cfg.TRAIN.BG_THRESH_LO))[0]
+    # image is only valid if such boxes exist
+    valid = len(fg_inds) > 0 or len(bg_inds) > 0
+    return valid
+
+  num = len(roidb)
+  filtered_roidb = [entry for entry in roidb if is_valid(entry)]
+  num_after = len(filtered_roidb)
+  print('Filtered {} roidb entries: {} -> {}'.format(num - num_after,
+                                                     num, num_after))
+  return filtered_roidb
+
+
+def train_net(network, imdb, roidb, valroidb, output_dir, tb_dir,
+              pretrained_model=None,
+              max_iters=40000):
+  """Train a Faster R-CNN network."""
+  roidb = filter_roidb(roidb)
+  valroidb = filter_roidb(valroidb)
+
+  sw = SolverWrapper(network, imdb, roidb, valroidb, output_dir, tb_dir,
+                     pretrained_model=pretrained_model)
+
+  print('Solving...')
+  sw.train_model(max_iters)
+  print('done solving')
