@@ -22,9 +22,6 @@ class NetMask(nn.Module):
       nn.BatchNorm2d(64),
       nn.ReLU(inplace=True),
       nn.Conv2d(64, 1, 7, 1),
-    )
-
-    self.toImg = nn.Sequential(
       nn.Tanh(),
     )
 
@@ -35,7 +32,6 @@ class NetMask(nn.Module):
   def forward(self, input):
     x = self.deconvmodel(input)
     x = self._up_sample(x)
-    x = self.toImg(x)
     return x
 
 if __name__ == '__main__':
