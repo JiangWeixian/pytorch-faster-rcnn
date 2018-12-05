@@ -132,13 +132,6 @@ class SolverWrapper(object):
           params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
         else:
           params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
-    # add netG params
-    for key, value in dict(self.netG.named_parameters()).items():
-      if value.requires_grad:
-        if 'bias' in key:
-          params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
-        else:
-          params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
     self.optimizer = torch.optim.SGD(params, momentum=cfg.TRAIN.MOMENTUM)
     # Write the train and validation information to tensorboard
     self.writer = tb.writer.FileWriter(self.tbdir)
@@ -245,8 +238,8 @@ class SolverWrapper(object):
     self.net.train()
     self.net.cuda()
 
-    # checkpoints
-    self.net.net_conv
+    # get object mask
+    self.object_mask = self.netG(self.net.net_conv)
 
     while iter < max_iters + 1:
       # Learning rate
