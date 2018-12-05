@@ -61,6 +61,8 @@ class Network(nn.Module):
     image = draw_bounding_boxes(\
                       self._gt_image, self._image_gt_summaries['gt_boxes'], self._image_gt_summaries['im_info'])
 
+    print(image[0].shape)
+
     return tb.summary.image('GROUND_TRUTH', image[0].astype('float32')/255.0)
 
   def _add_act_summary(self, key, tensor):
@@ -349,8 +351,6 @@ class Network(nn.Module):
     # This is just _build_network in tf-faster-rcnn
     torch.backends.cudnn.benchmark = False
     net_conv = self._image_to_head()
-    self.net_conv = net_conv
-    print('last_layer_size', net_conv.size())
 
     # build the anchors for the image
     self._anchor_component(net_conv.size(2), net_conv.size(3))

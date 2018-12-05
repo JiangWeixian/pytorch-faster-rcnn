@@ -22,6 +22,7 @@ import torch
 import torch.optim as optim
 
 import numpy as np
+import numpy.random as npr
 import os
 import sys
 import glob
@@ -38,8 +39,10 @@ class SolverWrapper(object):
     A wrapper class for the training process
   """
 
-  def __init__(self, network, imdb, roidb, valroidb, output_dir, tbdir, pretrained_model=None):
-    self.net = network
+  def __init__(self, network, imdb, roidb, valroidb, output_dir, tbdir, pretrained_model={}):
+    self.net = network['net']
+    # GAN
+    self.netG = network['g']
     self.imdb = imdb
     self.roidb = roidb
     self.valroidb = valroidb
@@ -49,10 +52,8 @@ class SolverWrapper(object):
     self.tbvaldir = tbdir + '_val'
     if not os.path.exists(self.tbvaldir):
       os.makedirs(self.tbvaldir)
-    self.pretrained_model = pretrained_model
-
-    # GAN
-    self.netG = network.g
+    self.pretrained_model = pretrained_model['model']
+    self.pretrained_model_g = pretrained_model['g']
 
   def snapshot(self, iter):
     net = self.net
@@ -166,9 +167,14 @@ class SolverWrapper(object):
     np_paths = []
     ss_paths = []
     # Fresh train directly from ImageNet weights
-    print('Loading initial model weights from {:s}'.format(self.pretrained_model))
-    self.net.load_pretrained_cnn(torch.load(self.pretrained_model))
-    print('Loaded.')
+    if self.pretrained_model:
+      print('Loading initial model weights from {:s}'.format(self.pretrained_model))
+      self.net.load_state_dict(torch.load(self.pretrained_model))
+    if self.pretrained_model_g:
+      print('Loading initial model weights from {:s}'.format(self.pretrained_model_g))
+      self.netG.load_state_dict(torch.load(self.pretrained_model_g))
+    if self.pretrained_model or self.pretrained_model:
+      print('Loaded.')
     # Need to fix the variables before loading, so that the RGB weights are changed to BGR
     # For VGG16 it also changes the convolutional weights fc6 and fc7 to
     # fully connected weights
@@ -211,6 +217,37 @@ class SolverWrapper(object):
       os.remove(str(sfile))
       ss_paths.remove(sfile)
 
+  def _swap_channels(self, image):
+    channels = [0, 1, 2]
+    fg = self.object_mask.numpy()
+    fg[fg < 0.01] = 0
+    bg = (1 - fg) * image
+    fg = fg * image
+    # bright
+    if npr.randint(2):
+      alpha = npr.uniform(-0.5 * 256, 0.5 * 256)
+      bg = bg + alpha
+      fg = fg + alpha  
+
+    # contrast
+    if npr.randint(2):
+      alpha = npr.uniform(0.5 * 256, 1.5 * 256)
+      fg = fg * alpha
+
+    # saturation
+    if npr.randint(2):
+      alpha = npr.uniform(0.5 * 256, 1.5 * 256)
+      fg[:, 0, :, :] = fg[:, 0, :, :] * alpha    
+  
+    # swap
+    if npr.randint(2):
+      npr.shuffle(channels)
+      fg = fg[:, channels, :, :]
+
+    resize_source = bg + fg
+    return resize_source
+    
+
   def train_model(self, max_iters):
     # Build data layers for both training and validation set
     self.data_layer = RoIDataLayer(self.roidb, self.imdb.num_classes)
@@ -238,8 +275,7 @@ class SolverWrapper(object):
     self.net.train()
     self.net.cuda()
 
-    # get object mask
-    self.object_mask = self.netG(self.net.net_conv)
+    blobs = []
 
     while iter < max_iters + 1:
       # Learning rate
@@ -253,6 +289,11 @@ class SolverWrapper(object):
       utils.timer.timer.tic()
       # Get training data, one batch at a time
       blobs = self.data_layer.forward()
+      # if iter != 0 or iter % 2 == 1:
+      #   blobs = self.data_layer.forward()
+      # else:
+      #   self.object_mask = self.netG(self.net._act_summaries['conv'])
+      #   blobs['data'] = self._swap_channels(blobs['data'])
 
       now = time.time()
       if iter == 1 or now - last_summary_time > cfg.TRAIN.SUMMARY_INTERVAL:
