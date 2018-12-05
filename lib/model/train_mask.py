@@ -10,6 +10,7 @@ from __future__ import print_function
 import tensorboardX as tb
 
 from model.config import cfg
+from nets.masknet import Downsample
 import roi_data_layer.roidb as rdl_roidb
 from roi_data_layer.layer import RoIDataLayer
 import utils.timer
@@ -41,6 +42,7 @@ class SolverWrapper(object):
 
   def __init__(self, network, imdb, roidb, valroidb, output_dir, tbdir, pretrained_model={}):
     self.net = network['net']
+    self.downsample = Downsample()
     # GAN
     self.netG = network['g']
     self.imdb = imdb
@@ -128,6 +130,12 @@ class SolverWrapper(object):
     lr = cfg.TRAIN.LEARNING_RATE
     params = []
     for key, value in dict(self.net.named_parameters()).items():
+      if value.requires_grad:
+        if 'bias' in key:
+          params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
+        else:
+          params += [{'params':[value],'lr':lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
+    for key, value in dict(self.downsample.named_parameters()).items():
       if value.requires_grad:
         if 'bias' in key:
           params += [{'params':[value],'lr':lr*(cfg.TRAIN.DOUBLE_BIAS + 1), 'weight_decay': cfg.TRAIN.BIAS_DECAY and cfg.TRAIN.WEIGHT_DECAY or 0}]
@@ -223,7 +231,6 @@ class SolverWrapper(object):
     fg[fg < 0.01] = 0
     bg = (1 - fg) * image
     fg = fg * image
-    print(bg.shape, fg.shape)
     # bright
     if npr.randint(2):
       alpha = npr.uniform(-0.5 * 256, 0.5 * 256)
@@ -243,7 +250,7 @@ class SolverWrapper(object):
     # swap
     if npr.randint(2):
       npr.shuffle(channels)
-      fg = fg[:, channels, :, :]
+      fg = fg[:, :, :, channels]
 
     resize_source = bg + fg
     return resize_source

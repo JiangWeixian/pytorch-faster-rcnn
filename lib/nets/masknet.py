@@ -4,6 +4,23 @@ import torch
 
 from torch.autograd import Variable
 
+class Downsample(nn.Module):
+  def __init__(self, input_nc = 3, output_nc = 1):
+    super(Downsample, self).__init__()
+    self.input_nc = input_nc
+    self.output_nc = output_nc
+
+    self.downsample = nn.Sequential(
+      # *2
+      nn.Conv2d(1024, 512, 1, 1),
+      nn.BatchNorm2d(512),
+      nn.ReLU(inplace=True),
+    )
+  
+  def forward(self, input):
+    x = self.downsample(input)
+    return x
+
 class NetMask(nn.Module):
   def __init__(self, input_nc = 3, output_nc = 1):
     super(NetMask, self).__init__()
