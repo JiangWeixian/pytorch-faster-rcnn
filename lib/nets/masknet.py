@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch.nn.functional as F
 import torch
 
 from torch.autograd import Variable
@@ -14,23 +15,31 @@ class NetMask2(nn.Module):
       nn.ConvTranspose2d(512, 256, 4, 2, 1),
       nn.BatchNorm2d(256),
       nn.ReLU(inplace=True),
-      nn.ConvTranspose2d(256, 128, 3, 2, 1),
+      nn.ConvTranspose2d(256, 128, 4, 2, 1),
       nn.BatchNorm2d(128),
       nn.ReLU(inplace=True),
-      nn.ConvTranspose2d(128, 64, 4, 2, 1, 1),
+      nn.ConvTranspose2d(128, 64, 4, 2, 1),
       nn.BatchNorm2d(64),
       nn.ReLU(inplace=True),
       nn.Conv2d(64, 1, 7, 1),
-      nn.Tanh()
     )
+
+    self.toImg = nn.Sequential(
+      nn.Tanh(),
+    )
+
+  def _up_sample(self, fm):
+    return F.upsample(fm, size=(375, 500), mode='bilinear')
 
   
   def forward(self, input):
     x = self.deconvmodel(input)
+    x = self._up_sample(x)
+    x = self.toImg(x)
     return x
 
 if __name__ == '__main__':
   netG = NetMask2()
-  input = Variable(torch.randn(1, 512, 41, 41))
+  input = Variable(torch.randn(1, 512, 38, 50))
   res = netG.forward(input)
   print(res.size())
