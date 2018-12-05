@@ -67,10 +67,10 @@ class SolverWrapper(object):
     # Store the model snapshot
     filename = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}'.format(iter) + '.pth'
     filename_downsample = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_downsample'.format(iter) + '.pth'
-    filename_g = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_g'.format(iter) + '.pth'
+    # filename_g = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_g'.format(iter) + '.pth'
     filename = os.path.join(self.output_dir, filename)
     torch.save(self.net.state_dict(), filename)
-    torch.save(self.netG.state_dict(), filename_g)
+    # torch.save(self.netG.state_dict(), filename_g)
     torch.save(self.downsample.state_dict(), filename_downsample)
     print('Wrote snapshot to: {:s}'.format(filename))
 
