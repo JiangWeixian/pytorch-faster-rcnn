@@ -158,7 +158,7 @@ class SolverWrapper(object):
     sfiles = os.path.join(self.output_dir, cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_*.pth')
     sfiles = glob.glob(sfiles)
     sfiles.sort(key=os.path.getmtime)
-    print(sfiles)
+    
     # Get the snapshot name in pytorch
     redfiles = []
     for stepsize in cfg.TRAIN.STEPSIZE:
@@ -171,6 +171,7 @@ class SolverWrapper(object):
     nfiles.sort(key=os.path.getmtime)
     redfiles = [redfile.replace('.pth', '.pkl') for redfile in redfiles]
     nfiles = [nn for nn in nfiles if nn not in redfiles]
+    print(nfiles, redfiles)
 
     lsf = len(sfiles)
     assert len(nfiles) == lsf
@@ -273,14 +274,11 @@ class SolverWrapper(object):
     lr, train_op = self.construct_graph()
 
     # Find previous snapshots if there is any to restore from
-    lsf, nfiles, sfiles = self.find_previous()
+    # lsf, nfiles, sfiles = self.find_previous()
 
     # Initialize the variables or restore them from the last snapshot
-    if lsf == 0:
-      lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.initialize()
-    else:
-      lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.restore(str(sfiles[-1]), 
-                                                                             str(nfiles[-1]))
+    lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.initialize()
+    
     iter = last_snapshot_iter + 1
     last_summary_time = time.time()
     # Make sure the lists are not empty

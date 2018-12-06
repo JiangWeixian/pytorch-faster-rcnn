@@ -59,8 +59,9 @@ set -x
 
 if [ ! -f ${NET_FINAL}.index ]; then
   if [[ ! -z  ${EXTRA_ARGS_SLUG}  ]]; then
-    CUDA_VISIBLE_DEVICES=${GPU_ID} time python ./tools/trainval_net.py \
-      --weight data/imagenet_weights/${NET}.pth \
+    CUDA_VISIBLE_DEVICES=${GPU_ID} time python ./tools/train_mask_net.py \
+      --weight output/res101/voc_2007_trainval/default/res101_faster_rcnn_iter_70000.pth \
+      --weight_g output/epoch_2_TRAIN_DETECT_netM.pth \
       --imdb ${TRAIN_IMDB} \
       --imdbval ${TEST_IMDB} \
       --iters ${ITERS} \
@@ -70,8 +71,9 @@ if [ ! -f ${NET_FINAL}.index ]; then
       --set ANCHOR_SCALES ${ANCHORS} ANCHOR_RATIOS ${RATIOS} \
       TRAIN.STEPSIZE ${STEPSIZE} ${EXTRA_ARGS}
   else
-    CUDA_VISIBLE_DEVICES=${GPU_ID} time python ./tools/trainval_net.py \
-      --weight data/imagenet_weights/${NET}.pth \
+    CUDA_VISIBLE_DEVICES=${GPU_ID} time python ./tools/train_mask_net.py \
+      --weight output/res101/voc_2007_trainval/default/res101_faster_rcnn_iter_70000.pth \
+      --weight_g output/epoch_2_TRAIN_DETECT_netM.pth \
       --imdb ${TRAIN_IMDB} \
       --imdbval ${TEST_IMDB} \
       --iters ${ITERS} \
