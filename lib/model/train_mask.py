@@ -8,6 +8,7 @@ from __future__ import division
 from __future__ import print_function
 
 import tensorboardX as tb
+import cv2
 
 from model.config import cfg
 from nets.masknet import Downsample
@@ -28,7 +29,6 @@ import os
 import sys
 import glob
 import time
-import torchvision.utils as vutils
 
 
 def scale_lr(optimizer, scale):
@@ -69,6 +69,7 @@ class SolverWrapper(object):
     filename_downsample = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_downsample'.format(iter) + '.pth'
     # filename_g = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_g'.format(iter) + '.pth'
     filename = os.path.join(self.output_dir, filename)
+    filename_downsample = os.path.join(self.output_dir, filename_downsample)
     torch.save(self.net.state_dict(), filename)
     # torch.save(self.netG.state_dict(), filename_g)
     torch.save(self.downsample.state_dict(), filename_downsample)
@@ -157,6 +158,7 @@ class SolverWrapper(object):
     sfiles = os.path.join(self.output_dir, cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_*.pth')
     sfiles = glob.glob(sfiles)
     sfiles.sort(key=os.path.getmtime)
+    print(sfiles)
     # Get the snapshot name in pytorch
     redfiles = []
     for stepsize in cfg.TRAIN.STEPSIZE:
@@ -258,6 +260,7 @@ class SolverWrapper(object):
       fg = fg[:, :, :, channels]
 
     resize_source = bg + fg
+    
     return resize_source
     
 

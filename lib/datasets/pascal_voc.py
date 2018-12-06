@@ -92,7 +92,9 @@ class pascal_voc(imdb):
     """
     Return the default path where PASCAL VOC is expected to be installed.
     """
-    return os.path.join(cfg.DATA_DIR, 'VOCdevkit')
+    if not self._image_set.endswith('test'):
+      return os.path.join(cfg.DATA_DIR, 'VOCdevkit')
+    return os.path.join(cfg.TEST_DATA_DIR, 'VOCdevkit')
 
   def gt_roidb(self):
     """
@@ -191,6 +193,9 @@ class pascal_voc(imdb):
   def _get_voc_results_file_template(self):
     # VOCdevkit/results/VOC2007/Main/<comp_id>_det_test_aeroplane.txt
     filename = self._get_comp_id() + '_det_' + self._image_set + '_{:s}.txt'
+    filedir = os.path.join(self._devkit_path, 'results', 'VOC' + self._year, 'Main')
+    if not os.path.exists(filedir):
+        os.makedirs(filedir)
     path = os.path.join(
       self._devkit_path,
       'results',

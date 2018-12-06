@@ -30,7 +30,7 @@ def parse_args():
             help='optional config file', default=None, type=str)
   parser.add_argument('--model', dest='model',
             help='model to test',
-            default=None, type=str)
+            default='./output/res101/voc_2007_trainval/default/res101_faster_rcnn_iter_70000.pth', type=str)
   parser.add_argument('--imdb', dest='imdb_name',
             help='dataset to test',
             default='voc_2007_test', type=str)
