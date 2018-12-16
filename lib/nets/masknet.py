@@ -94,7 +94,6 @@ class NetD(nn.Module):
   def __init__(self):
     super(NetD, self).__init__()
     layers = _create_layers()[0]
-    print(layers)
     self.length = len(layers)
     network_parts = []
     for i in range(self.length):
