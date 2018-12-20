@@ -11,7 +11,8 @@
 
 * val your code - use`exprements/scripts/test_faster_rcnn.sh` - **not test_net.py**
 
-## TODO
+## TODO in Mask
+> train in data-enhancement
 
 * [x] - Run this code
   * input =  [375, 500]
@@ -22,8 +23,20 @@
 * [x] - complete full train phase / `from iter 70000 to 14000, save it in output/default/voc_2007_trainval/res1010_faster_rcnn_iter_70000.pth(means iter 70000)`
 * [ ] - val this `pth` file
 
-## Changelog
+### Changelog
 
 * ~~add netG&D optimizer into origin~~
 * just upsample in netG(be same size as origin image), not by rconv
 * **change pretrainmodel name by add prefix pre_**
+
+## TODO in Gen
+> train&get the foreground&background-speration-model
+
+* [ ] - train locangan - in `train_gen.py`
+  * [x] - freze the fasterrcnn weights
+  * [x] - store weights
+  * [x] - slover
+  * [x] - train g or d functions
+  * [ ] - rm unuse code
+* [ ] - complete the entry py file - `train_gen_net.py`
+  * [ ] - create params network d

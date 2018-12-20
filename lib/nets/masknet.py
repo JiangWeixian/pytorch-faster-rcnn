@@ -88,6 +88,18 @@ def _create_layers(layer = default_layers, x_dim = default_dim):
       layers.append(layer)
   return layers, i_dim
 
+def gans_weights_init(m):
+  classname = m.__class__.__name__
+  if classname.find('Conv') != -1:
+      #print m.weight.data.size()
+      m.weight.data.normal_(0.0, 0.02)
+  if classname.find('Linear') != -1:
+      m.bias.data.fill_(0)
+      m.weight.data.normal_(0.0, 0.02)
+  elif classname.find('BatchNorm2d') != -1 or  classname.find('InstanceNorm2d') != -1:
+      m.weight.data.normal_(1.0, 0.02)
+      m.bias.data.fill_(0)
+
 class NetD(nn.Module):
   '''The netD class
   '''
