@@ -71,7 +71,7 @@ class SolverWrapper(object):
     filename = os.path.join(self.output_dir, filename)
     filename_downsample = os.path.join(self.output_dir, filename_downsample)
     torch.save(self.net.state_dict(), filename)
-    # torch.save(self.netG.state_dict(), filename_g)
+    torch.save(self.netG.state_dict(), filename_g)
     torch.save(self.downsample.state_dict(), filename_downsample)
     print('Wrote snapshot to: {:s}'.format(filename))
 
