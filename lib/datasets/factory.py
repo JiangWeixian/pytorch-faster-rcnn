@@ -13,6 +13,7 @@ from __future__ import print_function
 __sets = {}
 from datasets.pascal_voc import pascal_voc
 from datasets.coco import coco
+from datasets.pascal_voc_mask import pascal_voc_mask
 
 import numpy as np
 
@@ -26,6 +27,12 @@ for year in ['2007', '2012']:
   for split in ['train', 'val', 'trainval', 'test']:
     name = 'voc_{}_{}_diff'.format(year, split)
     __sets[name] = (lambda split=split, year=year: pascal_voc(split, year, use_diff=True))
+
+# Set up voc_mask_<year>_<split>
+for year in ['2007', '2012']:
+  for split in ['train', 'val', 'trainval', 'test']:
+    name = 'voc_mask_{}_{}'.format(year, split)
+    __sets[name] = (lambda split=split, year=year: pascal_voc_mask(split, year))
 
 # Set up coco_2014_<split>
 for year in ['2014']:

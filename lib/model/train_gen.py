@@ -23,6 +23,7 @@ except ImportError:
 
 import torch
 import torch.optim as optim
+import torchvision.utils as vutils
 
 import numpy as np
 import numpy.random as npr
@@ -61,6 +62,8 @@ class SolverWrapper(object):
       os.makedirs(self.tbvaldir)
     self.pretrained_model = pretrained_model['model']
     self.pretrained_model_g = pretrained_model['g']
+    self.pretrained_model_d = pretrained_model['d']
+    self.pretrained_model_downsample = pretrained_model['downsample']
     self.criterionGAN = GANLoss()
 
   def snapshot(self, iter):
@@ -86,6 +89,7 @@ class SolverWrapper(object):
     torch.save(self.netG.state_dict(), filename_g)
     torch.save(self.netD.state_dict(), filename_d)
     torch.save(self.downsample.state_dict(), filename_downsample)
+    vutils.save_image(self.fake.data, cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_g'.format(iter) + '.jpg')
     # Log the store info
     for path in [ filename, filename_d, filename_g, filename_downsample ]:
       print('Wrote snapshot to: {:s}'.format(path))
@@ -212,10 +216,16 @@ class SolverWrapper(object):
     if self.pretrained_model:
       print('Loading initial model weights from {:s}'.format(self.pretrained_model))
       self.net.load_state_dict(torch.load(self.pretrained_model))
+    if self.pretrained_model_downsample:
+      print('Loading initial model weights from {:s}'.format(self.pretrained_model_downsample))
+      self.downsample.load_state_dict(torch.load(self.pretrained_model_downsample))
     if self.pretrained_model_g:
       print('Loading initial model weights from {:s}'.format(self.pretrained_model_g))
       self.netG.load_state_dict(torch.load(self.pretrained_model_g))
-    if self.pretrained_model or self.pretrained_model:
+    if self.pretrained_model_d:
+      print('Loading initial model weights from {:s}'.format(self.pretrained_model_d))
+      self.netD.load_state_dict(torch.load(self.pretrained_model_d))
+    if self.pretrained_model_d or self.pretrained_model_g or self.pretrained_model or self.pretrained_model_downsample:
       print('Loaded.')
     # Need to fix the variables before loading, so that the RGB weights are changed to BGR
     # For VGG16 it also changes the convolutional weights fc6 and fc7 to
@@ -224,24 +234,6 @@ class SolverWrapper(object):
     lr = cfg.TRAIN.LEARNING_RATE
     stepsizes = list(cfg.TRAIN.STEPSIZE)
 
-    return lr, last_snapshot_iter, stepsizes, np_paths, ss_paths
-
-  def restore(self, sfile, nfile):
-    # Get the most recent snapshot and restore
-    np_paths = [nfile]
-    ss_paths = [sfile]
-    # Restore model from snapshots
-    last_snapshot_iter = self.from_snapshot(sfile, nfile)
-    # Set the learning rate
-    lr_scale = 1
-    stepsizes = []
-    for stepsize in cfg.TRAIN.STEPSIZE:
-      if last_snapshot_iter > stepsize:
-        lr_scale *= cfg.TRAIN.GAMMA
-      else:
-        stepsizes.append(stepsize)
-    scale_lr(self.optimizer, lr_scale)
-    lr = cfg.TRAIN.LEARNING_RATE * lr_scale
     return lr, last_snapshot_iter, stepsizes, np_paths, ss_paths
 
   def remove_snapshot(self, np_paths, ss_paths):
@@ -288,7 +280,7 @@ class SolverWrapper(object):
     self.loss_fm = criterion_fmloss(feats_fake, self.feats_real, cuda=True)
 
     # Loss D
-    self.loss_G = self.loss_G_GAN +  (self.loss_fm)*10
+    self.loss_G = self.loss_G_GAN +  (self.loss_fm) * 10
 
     # Backward G
     self.loss_G.backward(retain_graph=True)
@@ -301,14 +293,10 @@ class SolverWrapper(object):
     # Construct the computation graph
     lr, train_g_op, train_d_op = self.construct_graph()
 
-    # Find previous snapshots if there is any to restore from
-    # lsf, nfiles, sfiles = self.find_previous()
-
-    # Initialize the variables or restore them from the last snapshot
+    # Initialize
     lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.initialize()
     
     iter = last_snapshot_iter + 1
-    last_summary_time = time.time()
     # Make sure the lists are not empty
     stepsizes.append(max_iters)
     stepsizes.reverse()
@@ -340,29 +328,11 @@ class SolverWrapper(object):
         net_conv = self.net._image_to_head()
         train_d_op.zero_grad()
         w, h = blobs['im_info'][:2]
-        self.train_d_model(net_conv, blobs['data'], w, h)
+        self.train_d_model(net_conv, blobs['mask'], w, h)
         train_d_op.step()
         train_g_op.zero_grad()
         self.train_g_model(net_conv)
         train_g_op.step()
-
-      now = time.time()
-      if iter == 1 or now - last_summary_time > cfg.TRAIN.SUMMARY_INTERVAL:
-        # Compute the graph with summary
-        # rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, total_loss, summary = \
-        #   self.net.train_step_with_summary(blobs, self.optimizer)
-        # for _sum in summary: self.writer.add_summary(_sum, float(iter))
-        # Also check the summary on the validation set
-        blobs_val = self.data_layer_val.forward()
-        summary_val = self.net.get_summary(blobs_val)
-        for _sum in summary_val: self.valwriter.add_summary(_sum, float(iter))
-        last_summary_time = now
-      else:
-        # Compute the graph without summary
-        # rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, total_loss = \
-        #   self.net.train_step(blobs, self.optimizer)
-        continue
-      utils.timer.timer.toc()
 
       # Display training information
       if iter % (cfg.TRAIN.DISPLAY) == 0:
@@ -387,10 +357,6 @@ class SolverWrapper(object):
 
     if last_snapshot_iter != iter - 1:
       self.snapshot(iter - 1)
-
-    self.writer.close()
-    self.valwriter.close()
-
 
 def get_training_roidb(imdb):
   """Returns a roidb (Region of Interest database) for use in training."""

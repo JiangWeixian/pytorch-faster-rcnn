@@ -40,7 +40,7 @@ def parse_args():
                       default=None, type=str)
   parser.add_argument('--imdb', dest='imdb_name',
                       help='dataset to train on',
-                      default='voc_2007_trainval', type=str)
+                      default='voc_mask_2007_trainval', type=str)
   parser.add_argument('--imdbval', dest='imdbval_name',
                       help='dataset to validate on',
                       default='voc_2007_val', type=str)

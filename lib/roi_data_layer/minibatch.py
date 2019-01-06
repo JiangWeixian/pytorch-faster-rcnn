@@ -30,6 +30,7 @@ def get_minibatch(roidb, num_classes):
   im_blob, im_scales = _get_image_blob(roidb, random_scale_inds)
 
   blobs = {'data': im_blob}
+  _set_mask_blob(blobs, roidb, random_scale_inds)
 
   assert len(im_scales) == 1, "Single batch only"
   assert len(roidb) == 1, "Single batch only"
@@ -72,3 +73,21 @@ def _get_image_blob(roidb, scale_inds):
   blob = im_list_to_blob(processed_ims)
 
   return blob, im_scales
+
+def _set_mask_blob(blobs, roidb, scale_inds):
+  """Builds an input blob from the mask images in the roidb at the specified
+  scales.
+  """
+  num_images = len(roidb)
+  processed_ims = []
+  for i in range(num_images):
+    if roidb[i]['mask']:
+      im = cv2.imread(roidb[i]['mask'])
+      target_size = cfg.TRAIN.SCALES[scale_inds[i]]
+      im, _ = prep_im_for_blob(im, cfg.PIXEL_MEANS, target_size,
+                      cfg.TRAIN.MAX_SIZE)
+      processed_ims.append(im)
+
+  # Create a blob to hold the input images
+  blob = im_list_to_blob(processed_ims)
+  blobs['mask'] = blob
