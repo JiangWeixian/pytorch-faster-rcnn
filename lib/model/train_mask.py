@@ -57,6 +57,7 @@ class SolverWrapper(object):
       os.makedirs(self.tbvaldir)
     self.pretrained_model = pretrained_model['model']
     self.pretrained_model_g = pretrained_model['g']
+    self.pretrained_model_downsample = pretrained_model['downsample']
 
   def snapshot(self, iter):
     net = self.net
@@ -67,7 +68,7 @@ class SolverWrapper(object):
     # Store the model snapshot
     filename = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}'.format(iter) + '.pth'
     filename_downsample = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_downsample'.format(iter) + '.pth'
-    # filename_g = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_g'.format(iter) + '.pth'
+    filename_g = cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_g'.format(iter) + '.pth'
     filename = os.path.join(self.output_dir, filename)
     filename_downsample = os.path.join(self.output_dir, filename_downsample)
     torch.save(self.net.state_dict(), filename)
@@ -186,6 +187,9 @@ class SolverWrapper(object):
     if self.pretrained_model:
       print('Loading initial model weights from {:s}'.format(self.pretrained_model))
       self.net.load_state_dict(torch.load(self.pretrained_model))
+    if self.pretrained_model_downsample:
+      print('Loading initial model weights from {:s}'.format(self.pretrained_model))
+      self.downsample.load_state_dict(torch.load(self.pretrained_model_downsample))
     if self.pretrained_model_g:
       print('Loading initial model weights from {:s}'.format(self.pretrained_model_g))
       self.netG.load_state_dict(torch.load(self.pretrained_model_g))
