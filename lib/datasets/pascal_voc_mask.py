@@ -68,14 +68,14 @@ class pascal_voc_mask(imdb):
     """
     Return the absolute path to image i in the seg sequence.
     """
-    return self.image_path_from_index(self.image_index[i], type='SegmentationObject')
+    return self.image_path_from_index(self.image_index[i], type='SegmentationClass', ext='.png')
 
-  def image_path_from_index(self, index, type = 'JPEGImages'):
+  def image_path_from_index(self, index, type = 'JPEGImages', ext='.jpg'):
     """
     Construct an image path from the image's "index" identifier.
     """
-    image_path = os.path.join(self._data_path, 'JPEGImages',
-                              index + self._image_ext)
+    image_path = os.path.join(self._data_path, type,
+                              index + ext)
     assert os.path.exists(image_path), \
       'Path does not exist: {}'.format(image_path)
     return image_path
@@ -91,7 +91,7 @@ class pascal_voc_mask(imdb):
     assert os.path.exists(image_set_file), \
       'Path does not exist: {}'.format(image_set_file)
     with open(image_set_file) as f:
-      image_index = [x.strip() for x in f.readlines()]
+      image_index = [x.strip() for x in f.readlines() if os.path.exists(self.image_path_from_index(x.strip())) and os.path.exists(self.image_path_from_index(x.strip(), type='SegmentationClass', ext='.png'))]
     return image_index
 
   def _get_default_path(self):

@@ -1,3 +1,4 @@
+#coding=utf-8
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -18,10 +19,10 @@ import datasets.imdb
 import pprint
 import numpy as np
 from model.train_gen import train_net
-from model.train_val import get_training_roidb
+from model.train_gen import get_training_roidb
 
 
-default_weight_path = '../output/res101/voc_2007_trainval/default/res101_faster_rcnn_iter_70000.pth'
+default_weight_path = '/home/yn426/文档/JiangWei/pytorch-faster-rcnn/output/res101/voc_2007_trainval/default/res101_faster_rcnn_iter_70000.pth'
 
 def parse_args():
   """
@@ -43,7 +44,7 @@ def parse_args():
                       default='voc_mask_2007_trainval', type=str)
   parser.add_argument('--imdbval', dest='imdbval_name',
                       help='dataset to validate on',
-                      default='voc_2007_val', type=str)
+                      default='voc_mask_2007_val', type=str)
   parser.add_argument('--iters', dest='max_iters',
                       help='number of iterations to train',
                       default=70000, type=int)
@@ -56,11 +57,6 @@ def parse_args():
   parser.add_argument('--set', dest='set_cfgs',
                       help='set config keys', default=None,
                       nargs=argparse.REMAINDER)
-
-  if len(sys.argv) == 1:
-    print(sys.argv)
-    parser.print_help()
-    sys.exit(1)
 
   args = parser.parse_args()
   return args

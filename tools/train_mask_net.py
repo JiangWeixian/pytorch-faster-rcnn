@@ -1,3 +1,4 @@
+#coding=utf-8
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -21,7 +22,9 @@ from model.train_mask import train_net
 from model.train_val import get_training_roidb
 
 
-default_weight_path = '../output/res101/voc_2007_trainval/default/res101_faster_rcnn_iter_70000.pth'
+default_weight_path = '/home/yn426/文档/JiangWei/pytorch-faster-rcnn/output/res101_faster_rcnn_iter_70000.pth'
+default_weight_g_path = '/home/yn426/文档/JiangWei/pytorch-faster-rcnn/output/checkpoints/voc_2007_trainval/default/res101_faster_rcnn_iter_70000_g.pth'
+default_weight_downsample_path = '/home/yn426/文档/JiangWei/pytorch-faster-rcnn/output/checkpoints/voc_2007_trainval/default/res101_faster_rcnn_iter_70000_downsample.pth'
 
 def parse_args():
   """
@@ -37,7 +40,10 @@ def parse_args():
                       type=str)
   parser.add_argument('--weight_g', dest='weight_g',
                       help='initialize with pretrained model g weights',
-                      default=None, type=str)
+                      default=default_weight_g_path, type=str)
+  parser.add_argument('--weight_downsample', dest='weight_downsample',
+                      help='initialize with pretrained model g weights',
+                      default=default_weight_downsample_path, type=str)
   parser.add_argument('--imdb', dest='imdb_name',
                       help='dataset to train on',
                       default='voc_2007_trainval', type=str)
@@ -46,7 +52,7 @@ def parse_args():
                       default='voc_2007_val', type=str)
   parser.add_argument('--iters', dest='max_iters',
                       help='number of iterations to train',
-                      default=70000, type=int)
+                      default=50 * 10000, type=int)
   parser.add_argument('--tag', dest='tag',
                       help='tag of the model',
                       default=None, type=str)
@@ -57,10 +63,10 @@ def parse_args():
                       help='set config keys', default=None,
                       nargs=argparse.REMAINDER)
 
-  if len(sys.argv) == 1:
-    print(sys.argv)
-    parser.print_help()
-    sys.exit(1)
+  # if len(sys.argv) == 1:
+  #   print(sys.argv)
+  #   parser.print_help()
+  #   sys.exit(1)
 
   args = parser.parse_args()
   return args
@@ -130,6 +136,6 @@ if __name__ == '__main__':
   netG = NetMask()
     
   train_net({ 'net': net, 'g': netG }, imdb, roidb, valroidb, output_dir, tb_dir,
-            pretrained_model={ 'model': args.weight, 'g': args.weight_g },
+            pretrained_model={ 'model': args.weight, 'g': args.weight_g, 'downsample': args.weight_downsample },
             max_iters=args.max_iters)
   
