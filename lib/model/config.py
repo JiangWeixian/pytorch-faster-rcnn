@@ -1,3 +1,4 @@
+#coding=utf-8
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -69,7 +70,7 @@ __C.TRAIN.MAX_SIZE = 1000
 __C.TRAIN.IMS_PER_BATCH = 1
 
 # Minibatch size (number of regions of interest [ROIs])
-__C.TRAIN.BATCH_SIZE = 2
+__C.TRAIN.BATCH_SIZE = 8
 
 # Fraction of minibatch that is labeled foreground (i.e. class > 0)
 __C.TRAIN.FG_FRACTION = 0.25
@@ -258,8 +259,8 @@ __C.RNG_SEED = 3
 __C.ROOT_DIR = osp.abspath(osp.join(osp.dirname(__file__), '..', '..'))
 
 # Data directory
-__C.DATA_DIR = '/home/eric/Documents/datasets/'
-__C.TEST_DATA_DIR = '/home/eric/Documents/datasets/VOCtest'
+__C.DATA_DIR = '/home/yn426/文档/Datasets'
+__C.TEST_DATA_DIR = '/home/yn426/文档/Datasets/VOCtest'
 
 # Name (or path to) the matlab executable
 __C.MATLAB = 'matlab'

@@ -154,7 +154,7 @@ class SolverWrapper(object):
     nfiles = [nn for nn in nfiles if nn not in redfiles]
 
     lsf = len(sfiles)
-    assert len(nfiles) == lsf
+    # assert len(nfiles) == lsf
 
     return lsf, nfiles, sfiles
 
@@ -220,6 +220,7 @@ class SolverWrapper(object):
     lsf, nfiles, sfiles = self.find_previous()
 
     # Initialize the variables or restore them from the last snapshot
+    lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.initialize()
     if lsf == 0:
       lr, last_snapshot_iter, stepsizes, np_paths, ss_paths = self.initialize()
     else:

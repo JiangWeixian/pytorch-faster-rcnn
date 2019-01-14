@@ -188,7 +188,7 @@ class SolverWrapper(object):
       print('Loading initial model weights from {:s}'.format(self.pretrained_model))
       self.net.load_state_dict(torch.load(self.pretrained_model))
     if self.pretrained_model_downsample:
-      print('Loading initial model weights from {:s}'.format(self.pretrained_model))
+      print('Loading initial model weights from {:s}'.format(self.pretrained_model_downsample))
       self.downsample.load_state_dict(torch.load(self.pretrained_model_downsample))
     if self.pretrained_model_g:
       print('Loading initial model weights from {:s}'.format(self.pretrained_model_g))
@@ -414,4 +414,4 @@ def train_net(network, imdb, roidb, valroidb, output_dir, tb_dir,
 
   print('Solving...')
   sw.train_model(max_iters)
-  print('done solving')
+print('done solving')

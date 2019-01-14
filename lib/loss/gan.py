@@ -12,7 +12,7 @@ class GANLoss(nn.Module):
   - loss: defalut(now) is BCELOSS
   '''
   def __init__(self, target_real_label=1.0, target_fake_label=0.0,
-              tensor=torch.FloatTensor, type='BCE', cuda=False):
+              tensor=torch.FloatTensor, type='BCE', cuda=True):
     super(GANLoss, self).__init__()
     self.real_label = target_real_label
     self.fake_label = target_fake_label

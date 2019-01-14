@@ -31,6 +31,7 @@ import os
 import sys
 import glob
 import time
+from torch.autograd import Variable
 
 
 def scale_lr(optimizer, scale):
@@ -62,8 +63,8 @@ class SolverWrapper(object):
       os.makedirs(self.tbvaldir)
     self.pretrained_model = pretrained_model['model']
     self.pretrained_model_g = pretrained_model['g']
-    self.pretrained_model_d = pretrained_model['d']
-    self.pretrained_model_downsample = pretrained_model['downsample']
+    self.pretrained_model_d = pretrained_model['d'] if hasattr(pretrained_model, 'd') else False
+    self.pretrained_model_downsample = pretrained_model['downsample'] if hasattr(pretrained_model, 'downsample') else False
     self.criterionGAN = GANLoss()
 
   def snapshot(self, iter):
@@ -89,7 +90,7 @@ class SolverWrapper(object):
     torch.save(self.netG.state_dict(), filename_g)
     torch.save(self.netD.state_dict(), filename_d)
     torch.save(self.downsample.state_dict(), filename_downsample)
-    vutils.save_image(self.fake.data, cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_g'.format(iter) + '.jpg')
+    vutils.save_image(self.fake.data, os.path.join(self.output_dir, cfg.TRAIN.SNAPSHOT_PREFIX + '_iter_{:d}_g'.format(iter) + '.jpg'))
     # Log the store info
     for path in [ filename, filename_d, filename_g, filename_downsample ]:
       print('Wrote snapshot to: {:s}'.format(path))
@@ -325,10 +326,11 @@ class SolverWrapper(object):
       if iter == 0 or iter % 2 == 1:
         blobs = self.data_layer.forward()
       else:
-        net_conv = self.net._image_to_head()
+        self.net(blobs['data'], blobs['im_info'], blobs['gt_boxes'])
+        net_conv = self.net._act_summaries['conv']
         train_d_op.zero_grad()
         w, h = blobs['im_info'][:2]
-        self.train_d_model(net_conv, blobs['mask'], w, h)
+        self.train_d_model(net_conv, Variable(torch.from_numpy(blobs['mask'].transpose([0,3,1,2])).cuda()), w, h)
         train_d_op.step()
         train_g_op.zero_grad()
         self.train_g_model(net_conv)
@@ -337,7 +339,6 @@ class SolverWrapper(object):
       # Display training information
       if iter % (cfg.TRAIN.DISPLAY) == 0:
         print('iter: %d / %d, net_g_loss: %.6f\n >>> net_d_loss: %.6f\n ' % (iter, max_iters, self.loss_G, self.loss_D))
-        print('speed: {:.3f}s / iter'.format(utils.timer.timer.average_time()))
 
         # for k in utils.timer.timer._average_time.keys():
         #   print(k, utils.timer.timer.average_time(k))
@@ -374,11 +375,13 @@ def get_training_roidb(imdb):
 
 def filter_roidb(roidb):
   """Remove roidb entries that have no usable RoIs."""
-
   def is_valid(entry):
     # Valid images have:
     #   (1) At least one foreground RoI OR
     #   (2) At least one background RoI
+    valid = True
+    if not hasattr(entry, 'max_overlaps'):
+      return valid
     overlaps = entry['max_overlaps']
     # find boxes with sufficient overlap
     fg_inds = np.where(overlaps >= cfg.TRAIN.FG_THRESH)[0]
@@ -404,7 +407,7 @@ def train_net(network, imdb, roidb, valroidb, output_dir, tb_dir,
   roidb = filter_roidb(roidb)
   valroidb = filter_roidb(valroidb)
 
-  sw = SolverWrapper(network, imdb, roidb, valroidb, output_dir, tb_dir,
+  sw = SolverWrapper(network, imdb, roidb, roidb, output_dir, tb_dir,
                      pretrained_model=pretrained_model)
 
   print('Solving...')

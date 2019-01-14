@@ -81,13 +81,15 @@ def _set_mask_blob(blobs, roidb, scale_inds):
   num_images = len(roidb)
   processed_ims = []
   for i in range(num_images):
-    if roidb[i]['mask']:
-      im = cv2.imread(roidb[i]['mask'])
+    if hasattr(roidb[i], 'mask'):
+      im = cv2.imread(roidb[i]['mask'], 0)
       target_size = cfg.TRAIN.SCALES[scale_inds[i]]
-      im, _ = prep_im_for_blob(im, cfg.PIXEL_MEANS, target_size,
+      im, _ = prep_im_for_blob(im, 0, target_size,
                       cfg.TRAIN.MAX_SIZE)
+      im = im[:, :, np.newaxis]
       processed_ims.append(im)
 
   # Create a blob to hold the input images
-  blob = im_list_to_blob(processed_ims)
-  blobs['mask'] = blob
+  if len(processed_ims) != 0:
+    blob = im_list_to_blob(processed_ims, 1)
+    blobs['mask'] = blob
