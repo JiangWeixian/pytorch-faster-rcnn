@@ -10,6 +10,7 @@
 ## Tips
 
 * val your code - use`exprements/scripts/test_faster_rcnn.sh` - **not test_net.py**
+* **rm cache** - maybe it is necessary rm cache in vocdevkit
 
 ## TODO in Mask
 > train in data-enhancement
@@ -36,7 +37,7 @@ maybe we need a fine upsample network
 
 * [ ] - load mask dataset
   * [x] - pascal_voc / mask version
-  * [ ] - test load image and mask data
+  * [x] - test load image and mask data - in **lab computer**
 * [ ] - train locangan - in `train_gen.py`
   * [x] - freze the fasterrcnn weights
   * [x] - store weights
