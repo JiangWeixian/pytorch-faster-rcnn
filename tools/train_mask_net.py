@@ -49,7 +49,7 @@ def parse_args():
                       default='voc_2007_trainval', type=str)
   parser.add_argument('--imdbval', dest='imdbval_name',
                       help='dataset to validate on',
-                      default='voc_2007_val', type=str)
+                      default='voc_2007_trainval', type=str)
   parser.add_argument('--iters', dest='max_iters',
                       help='number of iterations to train',
                       default=50 * 10000, type=int)

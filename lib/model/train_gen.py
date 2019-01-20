@@ -217,16 +217,18 @@ class SolverWrapper(object):
     if self.pretrained_model:
       print('Loading initial model weights from {:s}'.format(self.pretrained_model))
       self.net.load_state_dict(torch.load(self.pretrained_model))
+      print('loaded')
     if self.pretrained_model_downsample:
       print('Loading initial model weights from {:s}'.format(self.pretrained_model_downsample))
       self.downsample.load_state_dict(torch.load(self.pretrained_model_downsample))
+      print('Loaded.')
     if self.pretrained_model_g:
       print('Loading initial model weights from {:s}'.format(self.pretrained_model_g))
       self.netG.load_state_dict(torch.load(self.pretrained_model_g))
+      print('Loaded.')
     if self.pretrained_model_d:
       print('Loading initial model weights from {:s}'.format(self.pretrained_model_d))
       self.netD.load_state_dict(torch.load(self.pretrained_model_d))
-    if self.pretrained_model_d or self.pretrained_model_g or self.pretrained_model or self.pretrained_model_downsample:
       print('Loaded.')
     # Need to fix the variables before loading, so that the RGB weights are changed to BGR
     # For VGG16 it also changes the convolutional weights fc6 and fc7 to

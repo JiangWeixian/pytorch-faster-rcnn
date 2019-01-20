@@ -21,9 +21,6 @@ import numpy as np
 from model.train_gen import train_net
 from model.train_gen import get_training_roidb
 
-
-default_weight_path = '/home/yn426/文档/JiangWei/pytorch-faster-rcnn/output/res101/voc_2007_trainval/default/res101_faster_rcnn_iter_70000.pth'
-
 def parse_args():
   """
   Parse input arguments
@@ -34,7 +31,7 @@ def parse_args():
                       default=None, type=str)
   parser.add_argument('--weight', dest='weight',
                       help='initialize with pretrained model weights',
-                      default=default_weight_path,
+                      default=cfg.RESNET.PRITRAIN_WEIGHT,
                       type=str)
   parser.add_argument('--weight_g', dest='weight_g',
                       help='initialize with pretrained model g weights',

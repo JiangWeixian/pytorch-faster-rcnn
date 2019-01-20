@@ -31,16 +31,17 @@ def parse_args():
                       default=None, type=str)
   parser.add_argument('--weight', dest='weight',
                       help='initialize with pretrained model weights',
+                      default=cfg.RESNET.PRITRAIN_WEIGHT,
                       type=str)
   parser.add_argument('--imdb', dest='imdb_name',
                       help='dataset to train on',
                       default='voc_2007_trainval', type=str)
   parser.add_argument('--imdbval', dest='imdbval_name',
                       help='dataset to validate on',
-                      default='voc_2007_test', type=str)
+                      default='voc_2007_val', type=str)
   parser.add_argument('--iters', dest='max_iters',
                       help='number of iterations to train',
-                      default=70000, type=int)
+                      default=10 * 70000, type=int)
   parser.add_argument('--tag', dest='tag',
                       help='tag of the model',
                       default=None, type=str)
@@ -50,10 +51,6 @@ def parse_args():
   parser.add_argument('--set', dest='set_cfgs',
                       help='set config keys', default=None,
                       nargs=argparse.REMAINDER)
-  
-  if len(sys.argv) == 1:
-    parser.print_help()
-    sys.exit(1)
 
   args = parser.parse_args()
   return args

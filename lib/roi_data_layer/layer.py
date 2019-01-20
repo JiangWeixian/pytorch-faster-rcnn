@@ -70,6 +70,11 @@ class RoIDataLayer(object):
     db_inds = self._perm[self._cur:self._cur + cfg.TRAIN.IMS_PER_BATCH]
     self._cur += cfg.TRAIN.IMS_PER_BATCH
 
+    for i in range(len(db_inds)):
+      if db_inds[i] >= len(self._roidb):
+        print(db_inds, len(self._roidb))
+        # db_inds[i] = len(self._roidb) - 1
+
     return db_inds
 
   def _get_next_minibatch(self):
