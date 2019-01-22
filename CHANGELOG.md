@@ -49,3 +49,7 @@ maybe we need a fine upsample network
   * [x] - checkout train
 * [ ] - complete the entry py file - `train_gen_net.py`
   * [ ] - create params network d
+
+## Snapshots
+
+* [x] - add snapshots folder store weights files

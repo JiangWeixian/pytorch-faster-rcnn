@@ -120,7 +120,6 @@ class resnetv1(Network):
 
     elif self._num_layers == 101:
       self.resnet = resnet101()
-      print(self.resnet)
 
     elif self._num_layers == 152:
       self.resnet = resnet152()
